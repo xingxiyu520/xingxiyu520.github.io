@@ -30,6 +30,7 @@ import {
   socialLinks,
   uiLabels,
 } from './data/siteContent';
+import AdminApp from './admin/AdminApp';
 
 type PageKey = 'home' | 'blog' | 'projects' | 'project' | 'about' | 'share' | 'bloggers' | 'article' | 'avatar';
 
@@ -2251,7 +2252,7 @@ function AvatarPage() {
   );
 }
 
-function App() {
+function PublicApp() {
   const content = useFrontendContent();
   const socialItems = useMemo(() => createSocials(content.site.github), [content.site.github]);
   const [page, setPage] = useState<PageKey>(() => pageFromHash());
@@ -2438,6 +2439,16 @@ function App() {
       </div>
     </main>
   );
+}
+
+function App() {
+  const isAdminRoute = window.location.pathname.replace(/\/+$/, '') === '/admin';
+
+  if (isAdminRoute) {
+    return <AdminApp />;
+  }
+
+  return <PublicApp />;
 }
 
 export default App;
