@@ -4,6 +4,7 @@ import './App.css';
 import {
   fetchArticleDetail,
   fetchPublicContent,
+  searchPublicContent,
   type ApiArticle,
   type ApiFriendLink,
   type ApiProject,
@@ -304,6 +305,7 @@ type FrontendContent = {
   site: RuntimeSite;
   isLoading: boolean;
   isFallback: boolean;
+  errorMessage?: string;
 };
 
 type DisplayNote = NoteMetadata & {
@@ -512,32 +514,30 @@ function apiFriendToCard(friend: ApiFriendLink, index: number): FriendCard {
 }
 
 function buildFrontendContent(
-  apiArticles: ApiArticle[],
-  apiProjects: ApiProject[],
-  apiShares: ApiShare[],
-  apiFriendLinks: ApiFriendLink[],
-  siteConfig: Record<string, unknown>,
+  apiContent: Awaited<ReturnType<typeof fetchPublicContent>>,
 ): FrontendContent {
+  const { articles: apiArticles, projects: apiProjects, shares: apiShares, friendLinks: apiFriendLinks, siteConfig, available } = apiContent;
   const notes = apiArticles.length > 0 ? apiArticles.map(apiArticleToNote) : fallbackContent.notes;
-  const projects = apiProjects.length > 0 ? apiProjects.map(apiProjectToCard) : fallbackContent.projects;
-  const apiResources = apiShares.length > 0 ? apiShares.map(apiShareToResource) : fallbackContent.resources;
-  const apiFriends = apiFriendLinks.length > 0 ? apiFriendLinks.map(apiFriendToCard) : fallbackContent.friendLinks;
-  const hasApiData = apiArticles.length > 0 || apiProjects.length > 0 || apiShares.length > 0 || apiFriendLinks.length > 0 || Object.keys(siteConfig).length > 0;
+  const projects = available.projects ? apiProjects.map(apiProjectToCard) : fallbackContent.projects;
+  const apiResources = available.shares ? apiShares.map(apiShareToResource) : fallbackContent.resources;
+  const apiFriends = available.friendLinks ? apiFriendLinks.map(apiFriendToCard) : fallbackContent.friendLinks;
+  const hasApiConnection = available.articles || available.projects || available.shares || available.friendLinks || available.siteConfig;
 
   return {
-    notes,
-    archiveGroups: apiArticles.length > 0 ? buildArchiveGroups(notes) : fallbackContent.archiveGroups,
+    notes: available.articles ? apiArticles.map(apiArticleToNote) : notes,
+    archiveGroups: available.articles ? buildArchiveGroups(apiArticles.map(apiArticleToNote)) : fallbackContent.archiveGroups,
     projects,
     resources: apiResources,
     friendLinks: apiFriends,
     site: buildRuntimeSite(siteConfig),
     isLoading: false,
-    isFallback: !hasApiData,
+    isFallback: !hasApiConnection,
+    errorMessage: hasApiConnection ? undefined : '本地内容',
   };
 }
 
 function useFrontendContent(): FrontendContent {
-  const [content, setContent] = useState<FrontendContent>(fallbackContent);
+  const [content, setContent] = useState<FrontendContent>({ ...fallbackContent, isLoading: true });
 
   useEffect(() => {
     const controller = new AbortController();
@@ -545,18 +545,12 @@ function useFrontendContent(): FrontendContent {
     fetchPublicContent(controller.signal)
       .then((apiContent) => {
         if (!controller.signal.aborted) {
-          setContent(buildFrontendContent(
-            apiContent.articles,
-            apiContent.projects,
-            apiContent.shares,
-            apiContent.friendLinks,
-            apiContent.siteConfig,
-          ));
+          setContent(buildFrontendContent(apiContent));
         }
       })
       .catch(() => {
         if (!controller.signal.aborted) {
-          setContent({ ...fallbackContent, isLoading: false, isFallback: true });
+          setContent({ ...fallbackContent, isLoading: false, isFallback: true, errorMessage: '本地内容' });
         }
       });
 
@@ -1247,6 +1241,19 @@ function PageHero({ eyebrow, title, desc, icon }: { eyebrow: string; title: stri
   );
 }
 
+function DataStatePill({ content }: { content: FrontendContent }) {
+  if (!content.isLoading && !content.isFallback) {
+    return null;
+  }
+
+  return (
+    <div className="data-state-pill" aria-live="polite">
+      <Icon name={content.isLoading ? 'clock' : 'spark'} />
+      <span>{content.isLoading ? '正在同步内容...' : content.errorMessage ?? '本地内容'}</span>
+    </div>
+  );
+}
+
 type GalleryPhoto = (typeof homeGalleryPhotos)[number];
 
 function PhotoGalleryModal({
@@ -1678,14 +1685,72 @@ function HomePage({
 function BlogPage({
   notes,
   archiveGroups,
+  resources,
   onOpenArticle,
 }: {
   notes: DisplayNote[];
   archiveGroups: ArchiveGroup[];
+  resources: ResourceCard[];
   onOpenArticle: (note: DisplayNote) => void;
 }) {
   const noteList = notes.length > 0 ? notes : fallbackContent.notes;
   const groups = archiveGroups.length > 0 ? archiveGroups : fallbackContent.archiveGroups;
+  const resourceList = resources.length > 0 ? resources : fallbackContent.resources;
+  const [searchQuery, setSearchQuery] = useState('');
+  const [isSearching, setIsSearching] = useState(false);
+  const [searchResults, setSearchResults] = useState<{ articles: DisplayNote[]; resources: ResourceCard[] } | null>(null);
+  const trimmedQuery = searchQuery.trim();
+
+  useEffect(() => {
+    if (trimmedQuery.length < 2) {
+      setSearchResults(null);
+      setIsSearching(false);
+      return undefined;
+    }
+
+    const controller = new AbortController();
+    const timer = window.setTimeout(() => {
+      setIsSearching(true);
+      searchPublicContent(trimmedQuery, controller.signal)
+        .then((result) => {
+          if (controller.signal.aborted) {
+            return;
+          }
+
+          if (result) {
+            setSearchResults({
+              articles: result.articles.map(apiArticleToNote),
+              resources: result.shares.map(apiShareToResource),
+            });
+            return;
+          }
+
+          const lowerQuery = trimmedQuery.toLowerCase();
+          setSearchResults({
+            articles: noteList.filter((note) => (
+              note.title.zh.toLowerCase().includes(lowerQuery)
+              || note.summary.zh.toLowerCase().includes(lowerQuery)
+              || note.tags.some((tag) => tag.toLowerCase().includes(lowerQuery))
+            )),
+            resources: resourceList.filter((resource) => (
+              resource.title.toLowerCase().includes(lowerQuery)
+              || resource.desc.toLowerCase().includes(lowerQuery)
+              || resource.category.toLowerCase().includes(lowerQuery)
+            )),
+          });
+        })
+        .finally(() => {
+          if (!controller.signal.aborted) {
+            setIsSearching(false);
+          }
+        });
+    }, 260);
+
+    return () => {
+      window.clearTimeout(timer);
+      controller.abort();
+    };
+  }, [noteList, resourceList, trimmedQuery]);
 
   return (
     <section className="page-shell">
@@ -1696,7 +1761,54 @@ function BlogPage({
             {item}
           </button>
         ))}
+        <input
+          className="soft-search-input"
+          value={searchQuery}
+          onChange={(event) => setSearchQuery(event.currentTarget.value)}
+          placeholder="搜索文章 / 分享"
+          aria-label="搜索文章和分享"
+        />
       </div>
+      {trimmedQuery.length >= 2 && (
+        <section className="search-results-card glass-card">
+          <div className="mini-title">
+            <Icon name="spark" />
+            <span>{isSearching ? '搜索中...' : `Search · ${trimmedQuery}`}</span>
+          </div>
+          {!isSearching && searchResults && searchResults.articles.length === 0 && searchResults.resources.length === 0 && (
+            <p className="empty-copy">没有找到相关内容。</p>
+          )}
+          {!isSearching && searchResults && searchResults.articles.length > 0 && (
+            <div className="search-result-group">
+              {searchResults.articles.map((note) => (
+                <button type="button" className="post-row" onClick={() => onOpenArticle(note)} key={note.slug}>
+                  <time>{note.date}</time>
+                  <h3>{note.title.zh}</h3>
+                  <div className="tag-row">
+                    {note.tags.map((tag) => <span className="soft-tag" key={tag}>{tag}</span>)}
+                  </div>
+                </button>
+              ))}
+            </div>
+          )}
+          {!isSearching && searchResults && searchResults.resources.length > 0 && (
+            <div className="search-resource-row">
+              {searchResults.resources.map((resource) => (
+                <a className="glass-action" href={resource.href} target="_blank" rel="noreferrer" key={resource.href}>
+                  <Icon name={resource.icon} />
+                  {resource.title}
+                </a>
+              ))}
+            </div>
+          )}
+        </section>
+      )}
+      {groups.length === 0 && trimmedQuery.length < 2 && (
+        <section className="empty-state glass-card">
+          <Icon name="book" />
+          <p>还没有发布文章。</p>
+        </section>
+      )}
       <div className="archive-stack">
         {groups.map((group) => (
           <article className="year-card glass-card" key={group.year}>
@@ -1758,6 +1870,12 @@ function ProjectsPage({
   return (
     <section className="page-shell">
       <PageHero {...pageHeroes.projects} />
+      {projectList.length === 0 && (
+        <section className="empty-state glass-card">
+          <Icon name="folder" />
+          <p>还没有发布项目。</p>
+        </section>
+      )}
       <div className="portfolio-grid">
         {projectList.map((project, index) => (
           <article className="portfolio-card glass-card" key={project.name}>
@@ -1957,6 +2075,12 @@ function SharePage({ resources }: { resources: ResourceCard[] }) {
         ))}
       </div>
       <div className="resource-grid">
+        {visibleResources.length === 0 && (
+          <section className="empty-state glass-card">
+            <Icon name="spark" />
+            <p>还没有分享内容。</p>
+          </section>
+        )}
         {visibleResources.map((resource, index) => (
           <article className={index < 2 ? 'resource-card glass-card featured-resource' : 'resource-card glass-card'} key={resource.title}>
             <div className="resource-icon">
@@ -1991,6 +2115,12 @@ function BloggersPage({ friendLinks }: { friendLinks: FriendCard[] }) {
         <span>{uiLabels.bloggersCountPrefix} {friendList.length} {uiLabels.bloggersCountSuffix}</span>
       </div>
       <div className="friend-grid">
+        {friendList.length === 0 && (
+          <section className="empty-state glass-card">
+            <Icon name="heart" />
+            <p>还没有友链。</p>
+          </section>
+        )}
         {friendList.map((friend, index) => (
           <article className={index < 2 ? 'friend-card glass-card friend-large' : 'friend-card glass-card'} key={friend.name}>
             <div className={`friend-avatar ${friend.tone}`}>
@@ -2279,7 +2409,7 @@ function App() {
         onToggleSiteLike={handleToggleSiteLike}
       />
     ),
-    blog: <BlogPage notes={content.notes} archiveGroups={content.archiveGroups} onOpenArticle={handleOpenArticle} />,
+    blog: <BlogPage notes={content.notes} archiveGroups={content.archiveGroups} resources={content.resources} onOpenArticle={handleOpenArticle} />,
     projects: <ProjectsPage projects={content.projects} onOpenProject={handleOpenProject} />,
     project: <ProjectDetailPage project={selectedProject} onNavigate={handleNavigate} />,
     about: <AboutPage site={content.site} onCopyEmail={handleCopyEmail} emailCopied={emailCopied} />,
@@ -2302,6 +2432,7 @@ function App() {
         </>
       )}
       {renderedPage !== 'home' && <PageNav current={page} onNavigate={handleNavigate} />}
+      <DataStatePill content={content} />
       <div className={`page-transition page-transition-${transitionPhase}`} key={renderedPage}>
         {pageContent}
       </div>

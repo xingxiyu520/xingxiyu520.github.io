@@ -87,6 +87,18 @@ export type PublicContentResponse = {
   shares: ApiShare[];
   friendLinks: ApiFriendLink[];
   siteConfig: Record<string, unknown>;
+  available: {
+    articles: boolean;
+    projects: boolean;
+    shares: boolean;
+    friendLinks: boolean;
+    siteConfig: boolean;
+  };
+};
+
+export type PublicSearchResponse = {
+  articles: ApiArticle[];
+  shares: ApiShare[];
 };
 
 export async function fetchPublicContent(signal?: AbortSignal): Promise<PublicContentResponse> {
@@ -104,12 +116,27 @@ export async function fetchPublicContent(signal?: AbortSignal): Promise<PublicCo
     shares: shares.status === 'fulfilled' ? shares.value : [],
     friendLinks: friendLinks.status === 'fulfilled' ? friendLinks.value : [],
     siteConfig: siteConfig.status === 'fulfilled' ? siteConfig.value.configs : {},
+    available: {
+      articles: articles.status === 'fulfilled',
+      projects: projects.status === 'fulfilled',
+      shares: shares.status === 'fulfilled',
+      friendLinks: friendLinks.status === 'fulfilled',
+      siteConfig: siteConfig.status === 'fulfilled',
+    },
   };
 }
 
 export async function fetchArticleDetail(slug: string, signal?: AbortSignal): Promise<ApiArticle | null> {
   try {
     return await apiRequest<ApiArticle>(`/articles/${encodeURIComponent(slug)}`, { signal });
+  } catch {
+    return null;
+  }
+}
+
+export async function searchPublicContent(query: string, signal?: AbortSignal): Promise<PublicSearchResponse | null> {
+  try {
+    return await apiRequest<PublicSearchResponse>(`/search?q=${encodeURIComponent(query)}`, { signal });
   } catch {
     return null;
   }
