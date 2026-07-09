@@ -43,14 +43,18 @@ export const archiveGroups = [
 ] as const;
 
 export const resources = [
-  { title: 'Agent Prompt Notebook', url: 'prompt.local/wiki', href: 'https://prompt.local/wiki', category: 'AI', desc: '记录智能体提示词、失败样例和可复用工作流的小型知识库。', views: '8.2k', marks: '412', icon: 'spark' },
-  { title: 'CSS Bento Layout Lab', url: 'layout.tools/bento', href: 'https://layout.tools/bento', category: '前端', desc: '用于调试非对称 Bento 网格、圆角和玻璃卡片间距的视觉工具。', views: '5.7k', marks: '236', icon: 'folder' },
-  { title: 'Reading Garden', url: 'read.garden', href: 'https://read.garden', category: '阅读', desc: '把论文、博客和书摘按主题串成一条柔软阅读路径。', views: '3.9k', marks: '188', icon: 'book' },
-  { title: '外链文章收纳示例', url: 'example.com/my-external-article', href: 'https://example.com/my-external-article', category: '文章', desc: '外站发布的文章放在推荐分享页，点击后直接打开原文链接，不进入站内文章详情。', views: '1.2k', marks: '68', icon: 'external' },
-  { title: 'Tiny API Shelf', url: 'api.shelf.dev', href: 'https://api.shelf.dev', category: '后端', desc: '收藏常用 API 设计模式、鉴权策略与错误码规范。', views: '2.4k', marks: '97', icon: 'code' },
-  { title: 'Design Token Cards', url: 'tokens.design', href: 'https://tokens.design', category: '资源', desc: '适合小型项目的颜色、阴影、字体 token 备忘卡。', views: '6.1k', marks: '301', icon: 'tag' },
-  { title: 'Study Sprint Timer', url: 'focus.soft', href: 'https://focus.soft', category: '学习', desc: '为主动回忆和间隔复习设计的轻量番茄钟。', views: '1.8k', marks: '76', icon: 'clock' },
-  { title: 'Frontend Checklist', url: 'check.front', href: 'https://check.front', category: '工具', desc: '上线前检查响应式、可访问性、状态和空数据。', views: '4.8k', marks: '203', icon: 'list' },
+  { title: 'PyTorch Documentation', url: 'pytorch.org/docs', href: 'https://pytorch.org/docs/stable/index.html', category: '深度学习', desc: 'PyTorch 官方文档，适合查张量、自动求导、模型训练、部署和生态库用法。', views: '官方文档', marks: '模型训练', icon: 'code' },
+  { title: 'Hugging Face Transformers', url: 'huggingface.co/docs/transformers', href: 'https://huggingface.co/docs/transformers/index', category: 'AI', desc: 'Transformer 模型生态的核心文档，适合学习预训练模型、微调和推理调用。', views: '官方文档', marks: '模型应用', icon: 'spark' },
+  { title: 'Papers with Code', url: 'paperswithcode.com', href: 'https://paperswithcode.com/', category: '论文', desc: '把机器学习论文、代码实现、数据集和榜单放在一起，适合追踪研究进展。', views: '研究索引', marks: '论文复现', icon: 'book' },
+  { title: 'Google AI Studio', url: 'aistudio.google.com', href: 'https://aistudio.google.com/', category: 'AI 应用', desc: 'Google 的 Gemini 应用实验入口，适合快速测试提示词、原型和多模态能力。', views: '官方工具', marks: '应用原型', icon: 'spark' },
+  { title: 'OpenAI Cookbook', url: 'cookbook.openai.com', href: 'https://cookbook.openai.com/', category: 'AI 应用', desc: '面向开发者的 AI 应用实践案例，包含检索增强、结构化输出、评测和工具调用等主题。', views: '官方教程', marks: '工程实践', icon: 'code' },
+  { title: 'Vercel AI SDK', url: 'ai-sdk.dev/docs', href: 'https://ai-sdk.dev/docs', category: 'AI 应用', desc: '用于在前端和全栈应用里构建聊天、流式输出和工具调用体验的 SDK 文档。', views: '官方文档', marks: '前端集成', icon: 'folder' },
+  { title: 'Deep Learning Book', url: 'deeplearningbook.org', href: 'https://www.deeplearningbook.org/', category: '学习', desc: 'Ian Goodfellow、Yoshua Bengio、Aaron Courville 的深度学习教材，适合补基础理论。', views: '在线教材', marks: '理论基础', icon: 'book' },
+  { title: 'Stanford CS231n Notes', url: 'cs231n.github.io', href: 'https://cs231n.github.io/', category: '学习', desc: '斯坦福视觉识别课程笔记，覆盖卷积网络、训练技巧、可视化和实践经验。', views: '课程笔记', marks: '计算机视觉', icon: 'pen' },
+  { title: 'The Illustrated Transformer', url: 'jalammar.github.io/illustrated-transformer', href: 'https://jalammar.github.io/illustrated-transformer/', category: '文章', desc: '用大量图解解释 Transformer 结构，非常适合建立注意力机制的直觉。', views: '图解文章', marks: 'Transformer', icon: 'external' },
+  { title: 'Distill', url: 'distill.pub', href: 'https://distill.pub/', category: '文章', desc: '高质量机器学习可视化文章合集，适合把抽象模型机制读得更直观。', views: '研究文章', marks: '可视化理解', icon: 'image' },
+  { title: 'React Documentation', url: 'react.dev', href: 'https://react.dev/', category: '前端', desc: 'React 官方文档，适合系统学习组件、Hooks、状态管理和现代 React 写法。', views: '官方文档', marks: '前端基础', icon: 'code' },
+  { title: 'MDN Web Docs', url: 'developer.mozilla.org', href: 'https://developer.mozilla.org/en-US/', category: '前端', desc: 'Web 标准、JavaScript、CSS、HTML 的权威参考，适合日常查阅和补知识。', views: '权威文档', marks: 'Web 基础', icon: 'list' },
 ] as const;
 
 export const friendLinks = [
@@ -304,8 +308,8 @@ export const uiLabels = {
   projectStackTitle: '技术标签',
   projectLinksTitle: '相关入口',
   backToProjects: '返回项目列表',
-  views: 'Views',
-  marks: 'Marks',
+  views: '来源',
+  marks: '用途',
   bloggersPrimaryTab: '博客',
   bloggersSecondaryTab: '链接',
   bloggersCountPrefix: '收录',

@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react';
+import { createPortal } from 'react-dom';
 import './App.css';
 import { notesMetadata, type NoteMetadata } from './data/notes';
 import { portfolioConfig } from './data/config';
@@ -1279,7 +1280,7 @@ function HomePage({
         <span className="tiny-bubble">{siteLike.liked ? uiLabels.likedState : uiLabels.likeAction}</span>
       </section>
     </section>
-    {isGalleryOpen && (
+    {isGalleryOpen && createPortal(
       <PhotoGalleryModal
         photos={homeGalleryPhotos}
         activeIndex={activePhotoIndex}
@@ -1288,7 +1289,8 @@ function HomePage({
         onNext={showNextPhoto}
         onClose={() => setIsGalleryOpen(false)}
         onNavigate={onNavigate}
-      />
+      />,
+      document.body,
     )}
     </>
   );
