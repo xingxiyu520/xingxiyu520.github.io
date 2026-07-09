@@ -1,6 +1,14 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import './App.css';
+import {
+  fetchArticleDetail,
+  fetchPublicContent,
+  type ApiArticle,
+  type ApiFriendLink,
+  type ApiProject,
+  type ApiShare,
+} from './api/content';
 import { notesMetadata, type NoteMetadata } from './data/notes';
 import { portfolioConfig } from './data/config';
 import {
@@ -233,26 +241,379 @@ const iconPaths: Record<IconName, ReactNode> = {
   ),
 };
 
-const socials = socialLinks.map((social) => ({
-  ...social,
-  href: social.href === 'github'
-    ? portfolioConfig.contact.github
-    : social.href,
-})) satisfies Array<{ label: string; href: string; icon: IconName }>;
+type SocialLinkItem = { label: string; href: string; icon: IconName };
 
-const projectCards = [
-  ...portfolioConfig.projects.map((project, index) => ({
-    name: project.name.zh.replace(/^[^\u4e00-\u9fa5A-Za-z]+/, ''),
-    year: ['2026', '2025', '2024'][index] ?? '2024',
-    desc: project.desc.zh,
-    tags: project.tags,
-    icon: project.icon,
-    website: project.website,
-    github: project.github,
+type ProjectCard = {
+  slug: string;
+  name: string;
+  year: string;
+  desc: string;
+  tags: string[];
+  icon: string;
+  website: string;
+  github: string;
+};
+
+type ResourceCard = {
+  title: string;
+  url: string;
+  href: string;
+  category: string;
+  desc: string;
+  views: string;
+  marks: string;
+  icon: IconName;
+};
+
+type FriendCard = {
+  name: string;
+  url: string;
+  href: string;
+  desc: string;
+  tone: 'pink' | 'blue';
+  avatarUrl?: string;
+};
+
+type ArchivePost = {
+  date: string;
+  title: string;
+  tags: string[];
+};
+
+type ArchiveGroup = {
+  year: string;
+  count: number;
+  posts: ArchivePost[];
+};
+
+type RuntimeSite = {
+  profileName: string;
+  headingAccent: string;
+  avatarUrl: string;
+  email: string;
+  github: string;
+  homeStatus: string;
+};
+
+type FrontendContent = {
+  notes: NoteMetadata[];
+  archiveGroups: ArchiveGroup[];
+  projects: ProjectCard[];
+  resources: ResourceCard[];
+  friendLinks: FriendCard[];
+  site: RuntimeSite;
+  isLoading: boolean;
+  isFallback: boolean;
+};
+
+type DisplayNote = NoteMetadata & {
+  contentMarkdown?: string | null;
+  coverUrl?: string | null;
+  viewCount?: number;
+};
+
+const fallbackProjects: ProjectCard[] = portfolioConfig.projects.map((project, index) => ({
+  slug: project.name.en.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, ''),
+  name: project.name.zh.replace(/^[^\u4e00-\u9fa5A-Za-z]+/, ''),
+  year: ['2026', '2025', '2024'][index] ?? '2024',
+  desc: project.desc.zh,
+  tags: [...project.tags],
+  icon: project.icon,
+  website: project.website,
+  github: project.github,
+}));
+
+const fallbackResources: ResourceCard[] = resources.map((resource) => ({
+  ...resource,
+  icon: resource.icon as IconName,
+}));
+
+const fallbackFriendLinks: FriendCard[] = friendLinks.map((friend) => ({
+  name: friend.name,
+  url: friend.url,
+  href: friend.url.startsWith('http') ? friend.url : `https://${friend.url}`,
+  desc: friend.desc,
+  tone: friend.tone as 'pink' | 'blue',
+  avatarUrl: undefined,
+}));
+
+const fallbackSite: RuntimeSite = {
+  profileName: portfolioConfig.profile.name,
+  headingAccent: portfolioConfig.hero.headingAccent,
+  avatarUrl: portfolioConfig.profile.avatarUrl,
+  email: portfolioConfig.contact.email,
+  github: portfolioConfig.contact.github,
+  homeStatus: homeContent.site.status,
+};
+
+const fallbackContent: FrontendContent = {
+  notes: notesMetadata,
+  archiveGroups: archiveGroups.map((group) => ({
+    year: group.year,
+    count: group.count,
+    posts: group.posts.map((post) => ({
+      date: post.date,
+      title: post.title,
+      tags: [...post.tags],
+    })),
   })),
-];
+  projects: fallbackProjects,
+  resources: fallbackResources,
+  friendLinks: fallbackFriendLinks,
+  site: fallbackSite,
+  isLoading: false,
+  isFallback: true,
+};
 
-type ProjectCard = (typeof projectCards)[number];
+function createSocials(github: string): SocialLinkItem[] {
+  return socialLinks.map((social) => ({
+    ...social,
+    href: social.href === 'github' ? github : social.href,
+  }));
+}
+
+function readConfigString(configs: Record<string, unknown>, path: string[], flatKey: string, fallback: string): string {
+  const flatValue = configs[flatKey];
+  if (typeof flatValue === 'string' && flatValue.trim()) {
+    return flatValue;
+  }
+
+  let current: unknown = configs;
+  for (const key of path) {
+    if (!current || typeof current !== 'object' || !(key in current)) {
+      return fallback;
+    }
+
+    current = (current as Record<string, unknown>)[key];
+  }
+
+  return typeof current === 'string' && current.trim() ? current : fallback;
+}
+
+function buildRuntimeSite(configs: Record<string, unknown>): RuntimeSite {
+  return {
+    profileName: readConfigString(configs, ['profile', 'name'], 'profile.name', fallbackSite.profileName),
+    headingAccent: readConfigString(configs, ['hero', 'headingAccent'], 'hero.headingAccent', fallbackSite.headingAccent),
+    avatarUrl: readConfigString(configs, ['profile', 'avatarUrl'], 'profile.avatarUrl', fallbackSite.avatarUrl),
+    email: readConfigString(configs, ['contact', 'email'], 'contact.email', fallbackSite.email),
+    github: readConfigString(configs, ['contact', 'github'], 'contact.github', fallbackSite.github),
+    homeStatus: readConfigString(configs, ['home', 'status'], 'home.status', fallbackSite.homeStatus),
+  };
+}
+
+function getDateString(value: string | null | undefined, fallback: string) {
+  if (!value) {
+    return fallback;
+  }
+
+  return value.slice(0, 10);
+}
+
+function apiArticleToNote(article: ApiArticle): DisplayNote {
+  const date = getDateString(article.published_at ?? article.created_at, article.created_at.slice(0, 10));
+
+  return {
+    slug: article.slug,
+    title: {
+      zh: article.title,
+      en: article.title,
+    },
+    summary: {
+      zh: article.summary ?? article.title,
+      en: article.summary ?? article.title,
+    },
+    date,
+    tags: article.tags.map((tag) => tag.name),
+    contentMarkdown: article.content_markdown ?? null,
+    coverUrl: article.cover_url,
+    viewCount: article.view_count,
+  };
+}
+
+function buildArchiveGroups(notes: readonly DisplayNote[]): ArchiveGroup[] {
+  const grouped = notes.reduce<Record<string, ArchivePost[]>>((acc, note) => {
+    const year = note.date.slice(0, 4) || '未归档';
+    const month = note.date.slice(5, 7) || '01';
+    const day = note.date.slice(8, 10) || '01';
+
+    acc[year] = acc[year] ?? [];
+    acc[year].push({
+      date: `${month}.${day}`,
+      title: note.title.zh,
+      tags: note.tags,
+    });
+
+    return acc;
+  }, {});
+
+  return Object.entries(grouped)
+    .sort(([left], [right]) => right.localeCompare(left))
+    .map(([year, posts]) => ({
+      year,
+      count: posts.length,
+      posts,
+    }));
+}
+
+function apiProjectToCard(project: ApiProject, index: number): ProjectCard {
+  const year = getDateString(project.created_at, new Date().getFullYear().toString()).slice(0, 4);
+  const nameParts = project.name.match(/[A-Za-z0-9\u4e00-\u9fa5]/g) ?? ['P', String(index + 1)];
+
+  return {
+    slug: project.slug,
+    name: project.name,
+    year,
+    desc: project.description ?? project.name,
+    tags: project.tech_stack,
+    icon: nameParts.slice(0, 2).join('').toUpperCase(),
+    website: project.demo_url ?? project.github_url ?? '#',
+    github: project.github_url ?? project.demo_url ?? '#',
+  };
+}
+
+function displayUrl(value: string) {
+  try {
+    return new URL(value).hostname;
+  } catch {
+    return value;
+  }
+}
+
+function iconForShare(share: ApiShare): IconName {
+  const source = `${share.type} ${share.category.name}`.toLowerCase();
+  if (source.includes('ai') || source.includes('人工智能')) return 'spark';
+  if (source.includes('tool') || source.includes('工具')) return 'code';
+  if (source.includes('read') || source.includes('阅读') || source.includes('文章')) return 'book';
+  return 'external';
+}
+
+function apiShareToResource(share: ApiShare): ResourceCard {
+  return {
+    title: share.title,
+    url: displayUrl(share.external_url),
+    href: share.external_url,
+    category: share.category.name || share.type,
+    desc: share.description ?? share.title,
+    views: '外部链接',
+    marks: share.tags[0]?.name ?? share.type,
+    icon: iconForShare(share),
+  };
+}
+
+function apiFriendToCard(friend: ApiFriendLink, index: number): FriendCard {
+  return {
+    name: friend.name,
+    url: displayUrl(friend.url),
+    href: friend.url,
+    desc: friend.description ?? friend.url,
+    tone: index % 2 === 0 ? 'pink' : 'blue',
+    avatarUrl: friend.avatar_url ?? undefined,
+  };
+}
+
+function buildFrontendContent(
+  apiArticles: ApiArticle[],
+  apiProjects: ApiProject[],
+  apiShares: ApiShare[],
+  apiFriendLinks: ApiFriendLink[],
+  siteConfig: Record<string, unknown>,
+): FrontendContent {
+  const notes = apiArticles.length > 0 ? apiArticles.map(apiArticleToNote) : fallbackContent.notes;
+  const projects = apiProjects.length > 0 ? apiProjects.map(apiProjectToCard) : fallbackContent.projects;
+  const apiResources = apiShares.length > 0 ? apiShares.map(apiShareToResource) : fallbackContent.resources;
+  const apiFriends = apiFriendLinks.length > 0 ? apiFriendLinks.map(apiFriendToCard) : fallbackContent.friendLinks;
+  const hasApiData = apiArticles.length > 0 || apiProjects.length > 0 || apiShares.length > 0 || apiFriendLinks.length > 0 || Object.keys(siteConfig).length > 0;
+
+  return {
+    notes,
+    archiveGroups: apiArticles.length > 0 ? buildArchiveGroups(notes) : fallbackContent.archiveGroups,
+    projects,
+    resources: apiResources,
+    friendLinks: apiFriends,
+    site: buildRuntimeSite(siteConfig),
+    isLoading: false,
+    isFallback: !hasApiData,
+  };
+}
+
+function useFrontendContent(): FrontendContent {
+  const [content, setContent] = useState<FrontendContent>(fallbackContent);
+
+  useEffect(() => {
+    const controller = new AbortController();
+
+    fetchPublicContent(controller.signal)
+      .then((apiContent) => {
+        if (!controller.signal.aborted) {
+          setContent(buildFrontendContent(
+            apiContent.articles,
+            apiContent.projects,
+            apiContent.shares,
+            apiContent.friendLinks,
+            apiContent.siteConfig,
+          ));
+        }
+      })
+      .catch(() => {
+        if (!controller.signal.aborted) {
+          setContent({ ...fallbackContent, isLoading: false, isFallback: true });
+        }
+      });
+
+    return () => controller.abort();
+  }, []);
+
+  return content;
+}
+
+function renderMarkdownLite(markdown: string) {
+  const lines = markdown.split(/\r?\n/);
+  const elements: ReactNode[] = [];
+  let listItems: string[] = [];
+
+  const flushList = () => {
+    if (listItems.length === 0) {
+      return;
+    }
+
+    elements.push(
+      <ul key={`list-${elements.length}`}>
+        {listItems.map((item) => <li key={item}>{item}</li>)}
+      </ul>,
+    );
+    listItems = [];
+  };
+
+  lines.forEach((line, index) => {
+    const trimmed = line.trim();
+
+    if (!trimmed) {
+      flushList();
+      return;
+    }
+
+    if (trimmed.startsWith('- ')) {
+      listItems.push(trimmed.slice(2));
+      return;
+    }
+
+    flushList();
+
+    if (trimmed.startsWith('## ')) {
+      elements.push(<h2 key={`h2-${index}`}>{trimmed.slice(3)}</h2>);
+      return;
+    }
+
+    if (trimmed.startsWith('# ')) {
+      return;
+    }
+
+    elements.push(<p key={`p-${index}`}>{trimmed}</p>);
+  });
+
+  flushList();
+  return elements;
+}
 
 type LikeState = {
   count: number;
@@ -710,10 +1071,10 @@ const PixelAvatar = ({ compact = false }: { compact?: boolean }) => (
   </svg>
 );
 
-const ProfileAvatar = ({ compact = false }: { compact?: boolean }) => (
+const ProfileAvatar = ({ compact = false, src = portfolioConfig.profile.avatarUrl }: { compact?: boolean; src?: string }) => (
   <img
     className={compact ? 'profile-avatar compact' : 'profile-avatar'}
-    src={portfolioConfig.profile.avatarUrl}
+    src={src}
     alt={uiLabels.profileAvatarAria}
     loading="lazy"
     decoding="async"
@@ -1033,6 +1394,11 @@ function PhotoGalleryModal({
 
 function HomePage({
   now,
+  notes,
+  projects,
+  resources,
+  site,
+  socialItems,
   onNavigate,
   onOpenArticle,
   onOpenProject,
@@ -1042,8 +1408,13 @@ function HomePage({
   onToggleSiteLike,
 }: {
   now: Date;
+  notes: DisplayNote[];
+  projects: ProjectCard[];
+  resources: ResourceCard[];
+  site: RuntimeSite;
+  socialItems: SocialLinkItem[];
   onNavigate: (page: PageKey) => void;
-  onOpenArticle: (note: NoteMetadata) => void;
+  onOpenArticle: (note: DisplayNote) => void;
   onOpenProject: (project: ProjectCard) => void;
   onCopyEmail: () => void;
   emailCopied: boolean;
@@ -1052,12 +1423,17 @@ function HomePage({
 }) {
   const calendarDays = useMemo(() => getCalendarDays(now), [now]);
   const carouselStep = Math.floor(now.getTime() / 5000);
-  const latestNoteIndex = carouselStep % notesMetadata.length;
-  const projectIndex = carouselStep % projectCards.length;
-  const recommendationIndex = carouselStep % homeRecommendations.length;
-  const latestNote = notesMetadata[latestNoteIndex];
-  const featuredProject = projectCards[projectIndex];
-  const recommendation = homeRecommendations[recommendationIndex];
+  const safeNotes = notes.length > 0 ? notes : fallbackContent.notes;
+  const safeProjects = projects.length > 0 ? projects : fallbackContent.projects;
+  const latestNoteIndex = carouselStep % safeNotes.length;
+  const projectIndex = carouselStep % safeProjects.length;
+  const recommendationIndex = carouselStep % Math.max(1, resources.length || homeRecommendations.length);
+  const latestNote = safeNotes[latestNoteIndex];
+  const featuredProject = safeProjects[projectIndex];
+  const recommendationResource = resources.length > 0 ? resources[recommendationIndex % resources.length] : null;
+  const recommendation = recommendationResource
+    ? `${recommendationResource.title}：${recommendationResource.desc}`
+    : homeRecommendations[recommendationIndex % homeRecommendations.length];
   const hh = String(now.getHours()).padStart(2, '0');
   const mm = String(now.getMinutes()).padStart(2, '0');
   const ss = String(now.getSeconds()).padStart(2, '0');
@@ -1084,13 +1460,13 @@ function HomePage({
     <section className="bento-shell">
       <aside className="glass-card sidebar-card">
         <div className="sidebar-profile">
-          <ProfileAvatar compact />
+          <ProfileAvatar compact src={site.avatarUrl} />
           <div>
             <p className="eyebrow">{homeContent.site.eyebrow}</p>
-            <h1>{portfolioConfig.profile.name}</h1>
+            <h1>{site.profileName}</h1>
           </div>
         </div>
-        <span className="status-pill">{homeContent.site.status}</span>
+        <span className="status-pill">{site.homeStatus}</span>
         <div className="side-menu" aria-label={uiLabels.homeMenuAria}>
           {homeMenuItems.map((item, index) => (
             <button
@@ -1134,12 +1510,12 @@ function HomePage({
 
       <section className="glass-card intro-card">
         <div className="intro-avatar-wrap">
-          <ProfileAvatar />
+          <ProfileAvatar src={site.avatarUrl} />
         </div>
         <div className="intro-copy">
           <p className="eyebrow">{homeContent.intro.eyebrow}</p>
           <h2>
-            {timeGreeting}，我是<span>{portfolioConfig.hero.headingAccent}</span>
+            {timeGreeting}，我是<span>{site.headingAccent}</span>
           </h2>
         </div>
       </section>
@@ -1150,7 +1526,7 @@ function HomePage({
           <h2>{homeContent.social.title}</h2>
         </div>
         <div className="social-grid">
-          {socials.map((social) => (
+          {socialItems.map((social) => (
             social.href === 'email' ? (
               <button
                 type="button"
@@ -1210,7 +1586,7 @@ function HomePage({
             <p className="eyebrow">{homeContent.articles.eyebrow}</p>
             <h2>{homeContent.articles.title}</h2>
           </div>
-          <span className="count-bubble">{notesMetadata.length}</span>
+          <span className="count-bubble">{safeNotes.length}</span>
         </div>
         <div className="article-list">
           <button type="button" key={latestNote.slug} className="article-item" onClick={() => onOpenArticle(latestNote)}>
@@ -1219,7 +1595,7 @@ function HomePage({
             <p>{latestNote.summary.zh}</p>
           </button>
           <div className="carousel-dots" aria-hidden="true">
-            {notesMetadata.slice(0, 3).map((note, index) => (
+            {safeNotes.slice(0, 3).map((note, index) => (
               <span className={index === latestNoteIndex % 3 ? 'active' : ''} key={note.slug} />
             ))}
           </div>
@@ -1240,7 +1616,7 @@ function HomePage({
             </div>
           </button>
           <div className="carousel-dots" aria-hidden="true">
-            {projectCards.slice(0, 3).map((project, index) => (
+            {safeProjects.slice(0, 3).map((project, index) => (
               <span className={index === projectIndex % 3 ? 'active' : ''} key={project.name} />
             ))}
           </div>
@@ -1255,8 +1631,11 @@ function HomePage({
         <h2>{homeContent.recommendation.title}</h2>
         <p>{recommendation}</p>
         <div className="carousel-dots" aria-hidden="true">
-          {homeRecommendations.map((item, index) => (
-            <span className={index === recommendationIndex ? 'active' : ''} key={item} />
+          {(recommendationResource ? resources : homeRecommendations).slice(0, 6).map((item, index) => (
+            <span
+              className={index === recommendationIndex % 6 ? 'active' : ''}
+              key={typeof item === 'string' ? item : item.href}
+            />
           ))}
         </div>
         <button type="button" onClick={() => onNavigate('share')}>{homeContent.recommendation.buttonLabel}</button>
@@ -1296,7 +1675,18 @@ function HomePage({
   );
 }
 
-function BlogPage({ onOpenArticle }: { onOpenArticle: (note: NoteMetadata) => void }) {
+function BlogPage({
+  notes,
+  archiveGroups,
+  onOpenArticle,
+}: {
+  notes: DisplayNote[];
+  archiveGroups: ArchiveGroup[];
+  onOpenArticle: (note: DisplayNote) => void;
+}) {
+  const noteList = notes.length > 0 ? notes : fallbackContent.notes;
+  const groups = archiveGroups.length > 0 ? archiveGroups : fallbackContent.archiveGroups;
+
   return (
     <section className="page-shell">
       <PageHero {...pageHeroes.blog} />
@@ -1308,7 +1698,7 @@ function BlogPage({ onOpenArticle }: { onOpenArticle: (note: NoteMetadata) => vo
         ))}
       </div>
       <div className="archive-stack">
-        {archiveGroups.map((group) => (
+        {groups.map((group) => (
           <article className="year-card glass-card" key={group.year}>
             <div className="year-head">
               <div>
@@ -1319,7 +1709,7 @@ function BlogPage({ onOpenArticle }: { onOpenArticle: (note: NoteMetadata) => vo
             </div>
             <div className="post-rows">
               {group.posts.map((post) => {
-                const linkedNote = notesMetadata.find((note) => note.title.zh === post.title);
+                const linkedNote = noteList.find((note) => note.title.zh === post.title);
                 const archiveNote = linkedNote ?? {
                   slug: `${group.year}-${post.date}-${post.title}`,
                   title: { zh: post.title, en: post.title },
@@ -1356,12 +1746,20 @@ function BlogPage({ onOpenArticle }: { onOpenArticle: (note: NoteMetadata) => vo
   );
 }
 
-function ProjectsPage({ onOpenProject }: { onOpenProject: (project: ProjectCard) => void }) {
+function ProjectsPage({
+  projects,
+  onOpenProject,
+}: {
+  projects: ProjectCard[];
+  onOpenProject: (project: ProjectCard) => void;
+}) {
+  const projectList = projects.length > 0 ? projects : fallbackContent.projects;
+
   return (
     <section className="page-shell">
       <PageHero {...pageHeroes.projects} />
       <div className="portfolio-grid">
-        {projectCards.map((project, index) => (
+        {projectList.map((project, index) => (
           <article className="portfolio-card glass-card" key={project.name}>
             <div className="project-icon">{project.icon}</div>
             <div className="project-title-row">
@@ -1468,12 +1866,20 @@ function ProjectDetailPage({ project, onNavigate }: { project: ProjectCard; onNa
   );
 }
 
-function AboutPage({ onCopyEmail, emailCopied }: { onCopyEmail: () => void; emailCopied: boolean }) {
+function AboutPage({
+  site,
+  onCopyEmail,
+  emailCopied,
+}: {
+  site: RuntimeSite;
+  onCopyEmail: () => void;
+  emailCopied: boolean;
+}) {
   return (
     <section className="page-shell calm-page">
       <article className="about-note glass-card">
         <div className="about-top">
-          <ProfileAvatar />
+          <ProfileAvatar src={site.avatarUrl} />
           <div>
             <p className="eyebrow">{aboutContent.eyebrow}</p>
             <h1>{aboutContent.title}</h1>
@@ -1498,7 +1904,7 @@ function AboutPage({ onCopyEmail, emailCopied }: { onCopyEmail: () => void; emai
           ))}
         </div>
         <div className="round-actions">
-          <a href={portfolioConfig.contact.github} target="_blank" rel="noreferrer" aria-label={uiLabels.githubAria}>
+          <a href={site.github} target="_blank" rel="noreferrer" aria-label={uiLabels.githubAria}>
             <Icon name="github" />
           </a>
           <button
@@ -1518,15 +1924,22 @@ function AboutPage({ onCopyEmail, emailCopied }: { onCopyEmail: () => void; emai
   );
 }
 
-function SharePage() {
+function SharePage({ resources }: { resources: ResourceCard[] }) {
+  const resourceList = resources.length > 0 ? resources : fallbackContent.resources;
   const resourceFilters = useMemo(
-    () => ['全部', ...Array.from(new Set(resources.map((resource) => resource.category)))] as const,
-    [],
+    () => ['全部', ...Array.from(new Set(resourceList.map((resource) => resource.category)))],
+    [resourceList],
   );
   const [activeFilter, setActiveFilter] = useState<string>('全部');
   const visibleResources = activeFilter === '全部'
-    ? resources
-    : resources.filter((resource) => resource.category === activeFilter);
+    ? resourceList
+    : resourceList.filter((resource) => resource.category === activeFilter);
+
+  useEffect(() => {
+    if (!resourceFilters.includes(activeFilter)) {
+      setActiveFilter('全部');
+    }
+  }, [activeFilter, resourceFilters]);
 
   return (
     <section className="page-shell">
@@ -1566,24 +1979,26 @@ function SharePage() {
   );
 }
 
-function BloggersPage() {
+function BloggersPage({ friendLinks }: { friendLinks: FriendCard[] }) {
+  const friendList = friendLinks.length > 0 ? friendLinks : fallbackContent.friendLinks;
+
   return (
     <section className="page-shell">
       <PageHero {...pageHeroes.bloggers} />
       <div className="toggle-card glass-card">
         <button type="button" className="filter-chip active">{uiLabels.bloggersPrimaryTab}</button>
         <button type="button" className="filter-chip">{uiLabels.bloggersSecondaryTab}</button>
-        <span>{uiLabels.bloggersCountPrefix} {friendLinks.length} {uiLabels.bloggersCountSuffix}</span>
+        <span>{uiLabels.bloggersCountPrefix} {friendList.length} {uiLabels.bloggersCountSuffix}</span>
       </div>
       <div className="friend-grid">
-        {friendLinks.map((friend, index) => (
+        {friendList.map((friend, index) => (
           <article className={index < 2 ? 'friend-card glass-card friend-large' : 'friend-card glass-card'} key={friend.name}>
             <div className={`friend-avatar ${friend.tone}`}>
-              <PixelAvatar compact />
+              {friend.avatarUrl ? <img src={friend.avatarUrl} alt="" /> : <PixelAvatar compact />}
             </div>
             <div>
               <h2>{friend.name}</h2>
-              <a href="https://example.com" target="_blank" rel="noreferrer">{friend.url}</a>
+              <a href={friend.href} target="_blank" rel="noreferrer">{friend.url}</a>
               <p>{friend.desc}</p>
             </div>
           </article>
@@ -1598,15 +2013,21 @@ function ArticlePage({
   like,
   onToggleLike,
 }: {
-  note: NoteMetadata;
+  note: DisplayNote;
   like: LikeState;
-  onToggleLike: (note: NoteMetadata) => void;
+  onToggleLike: (note: DisplayNote) => void;
 }) {
+  const hasMarkdownContent = Boolean(note.contentMarkdown?.trim());
+
   return (
     <section className="article-layout">
       <article className="reader-card glass-card">
         <div className="article-cover">
-          <AlbumIllustration />
+          {note.coverUrl ? (
+            <img className="article-cover-image" src={note.coverUrl} alt="" />
+          ) : (
+            <AlbumIllustration />
+          )}
         </div>
         <div className="article-meta-line">
           {note.tags.map((tag) => (
@@ -1617,27 +2038,31 @@ function ArticlePage({
         <h1>{note.title.zh}</h1>
         <p className="article-lead">{note.summary.zh}</p>
         <div className="article-body">
-          {articleDetailContent.sections.map((section) => (
-            <section key={section.id}>
-              <h2 id={section.id}>{section.title}</h2>
-              {section.paragraphs.map((paragraph) => (
-                <p key={paragraph}>{paragraph}</p>
-              ))}
-              {'list' in section && (
-                <ul>
-                  {section.list.map((item) => (
-                    <li key={item}>{item}</li>
-                  ))}
-                </ul>
-              )}
-              {'figure' in section && (
-                <div className="inline-figure">
-                  <Icon name="image" />
-                  <span>{section.figure}</span>
-                </div>
-              )}
-            </section>
-          ))}
+          {hasMarkdownContent ? (
+            renderMarkdownLite(note.contentMarkdown ?? '')
+          ) : (
+            articleDetailContent.sections.map((section) => (
+              <section key={section.id}>
+                <h2 id={section.id}>{section.title}</h2>
+                {section.paragraphs.map((paragraph) => (
+                  <p key={paragraph}>{paragraph}</p>
+                ))}
+                {'list' in section && (
+                  <ul>
+                    {section.list.map((item) => (
+                      <li key={item}>{item}</li>
+                    ))}
+                  </ul>
+                )}
+                {'figure' in section && (
+                  <div className="inline-figure">
+                    <Icon name="image" />
+                    <span>{section.figure}</span>
+                  </div>
+                )}
+              </section>
+            ))
+          )}
         </div>
       </article>
       <aside className="reader-aside">
@@ -1653,9 +2078,13 @@ function ArticlePage({
             <Icon name="list" />
             <span>{articleDetailContent.aside.tocTitle}</span>
           </div>
-          {articleDetailContent.sections.map((section, index) => (
-            <a className={index === 0 ? 'active' : ''} href={`#${section.id}`} key={section.id}>{section.title}</a>
-          ))}
+          {hasMarkdownContent ? (
+            <a className="active" href="#">{note.title.zh}</a>
+          ) : (
+            articleDetailContent.sections.map((section, index) => (
+              <a className={index === 0 ? 'active' : ''} href={`#${section.id}`} key={section.id}>{section.title}</a>
+            ))
+          )}
         </section>
         <section className="aside-card glass-card like-aside">
           <button
@@ -1693,12 +2122,14 @@ function AvatarPage() {
 }
 
 function App() {
+  const content = useFrontendContent();
+  const socialItems = useMemo(() => createSocials(content.site.github), [content.site.github]);
   const [page, setPage] = useState<PageKey>(() => pageFromHash());
   const [renderedPage, setRenderedPage] = useState<PageKey>(() => pageFromHash());
   const [transitionPhase, setTransitionPhase] = useState<'idle' | 'exit' | 'enter'>('idle');
   const [now, setNow] = useState(() => new Date());
-  const [selectedArticle, setSelectedArticle] = useState<NoteMetadata>(() => notesMetadata[0]);
-  const [selectedProjectName, setSelectedProjectName] = useState(() => projectCards[0]?.name ?? '');
+  const [selectedArticle, setSelectedArticle] = useState<DisplayNote>(() => fallbackContent.notes[0]);
+  const [selectedProjectName, setSelectedProjectName] = useState(() => fallbackContent.projects[0]?.name ?? '');
   const [emailCopied, setEmailCopied] = useState(false);
   const [siteLike, setSiteLike] = useState<LikeState>(() => readLikeState(SITE_LIKE_STORAGE_KEY, SITE_LIKE_BASE_COUNT));
   const [articleLikes, setArticleLikes] = useState<Record<string, LikeState>>({});
@@ -1762,10 +2193,19 @@ function App() {
     setPage(nextPage);
   };
 
-  const handleOpenArticle = (note: NoteMetadata) => {
+  const handleOpenArticle = (note: DisplayNote) => {
     setSelectedArticle(note);
     setHashPage('article');
     handleNavigate('article');
+
+    const controller = new AbortController();
+    fetchArticleDetail(note.slug, controller.signal)
+      .then((article) => {
+        if (article) {
+          setSelectedArticle(apiArticleToNote(article));
+        }
+      })
+      .catch(() => undefined);
   };
 
   const handleOpenProject = (project: ProjectCard) => {
@@ -1775,7 +2215,7 @@ function App() {
   };
 
   const handleCopyEmail = () => {
-    copyTextToClipboard(portfolioConfig.contact.email)
+    copyTextToClipboard(content.site.email)
       .then(() => {
         setEmailCopied(true);
 
@@ -1800,7 +2240,7 @@ function App() {
     });
   };
 
-  const handleToggleArticleLike = (note: NoteMetadata) => {
+  const handleToggleArticleLike = (note: DisplayNote) => {
     const storageKey = getArticleLikeStorageKey(note.slug);
 
     setArticleLikes((currentLikes) => {
@@ -1815,7 +2255,9 @@ function App() {
     });
   };
 
-  const selectedProject = projectCards.find((project) => project.name === selectedProjectName) ?? projectCards[0];
+  const selectedProject = content.projects.find((project) => project.name === selectedProjectName)
+    ?? content.projects[0]
+    ?? fallbackContent.projects[0];
   const selectedArticleLike = articleLikes[selectedArticle.slug]
     ?? readLikeState(getArticleLikeStorageKey(selectedArticle.slug), ARTICLE_LIKE_BASE_COUNT);
 
@@ -1823,6 +2265,11 @@ function App() {
     home: (
       <HomePage
         now={now}
+        notes={content.notes}
+        projects={content.projects}
+        resources={content.resources}
+        site={content.site}
+        socialItems={socialItems}
         onNavigate={handleNavigate}
         onOpenArticle={handleOpenArticle}
         onOpenProject={handleOpenProject}
@@ -1832,12 +2279,12 @@ function App() {
         onToggleSiteLike={handleToggleSiteLike}
       />
     ),
-    blog: <BlogPage onOpenArticle={handleOpenArticle} />,
-    projects: <ProjectsPage onOpenProject={handleOpenProject} />,
+    blog: <BlogPage notes={content.notes} archiveGroups={content.archiveGroups} onOpenArticle={handleOpenArticle} />,
+    projects: <ProjectsPage projects={content.projects} onOpenProject={handleOpenProject} />,
     project: <ProjectDetailPage project={selectedProject} onNavigate={handleNavigate} />,
-    about: <AboutPage onCopyEmail={handleCopyEmail} emailCopied={emailCopied} />,
-    share: <SharePage />,
-    bloggers: <BloggersPage />,
+    about: <AboutPage site={content.site} onCopyEmail={handleCopyEmail} emailCopied={emailCopied} />,
+    share: <SharePage resources={content.resources} />,
+    bloggers: <BloggersPage friendLinks={content.friendLinks} />,
     article: <ArticlePage note={selectedArticle} like={selectedArticleLike} onToggleLike={handleToggleArticleLike} />,
     avatar: <AvatarPage />,
   }[renderedPage];
