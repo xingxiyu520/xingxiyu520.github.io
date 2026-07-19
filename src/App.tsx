@@ -1,6 +1,21 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import './App.css';
+import {
+  fetchArticleLikeStatus,
+  fetchArticleDetail,
+  fetchPublicContent,
+  fetchSiteLikeStatus,
+  recordOutboundClick,
+  recordPageView,
+  searchPublicContent,
+  setArticleLikeStatus,
+  setSiteLikeStatus,
+  type ApiArticle,
+  type ApiFriendLink,
+  type ApiProject,
+  type ApiShare,
+} from './api/content';
 import { notesMetadata, type NoteMetadata } from './data/notes';
 import { portfolioConfig } from './data/config';
 import {
@@ -21,6 +36,7 @@ import {
   socialLinks,
   uiLabels,
 } from './data/siteContent';
+import AdminApp from './admin/AdminApp';
 
 type PageKey = 'home' | 'blog' | 'projects' | 'project' | 'about' | 'share' | 'bloggers' | 'article' | 'avatar';
 
@@ -233,26 +249,441 @@ const iconPaths: Record<IconName, ReactNode> = {
   ),
 };
 
-const socials = socialLinks.map((social) => ({
-  ...social,
-  href: social.href === 'github'
-    ? portfolioConfig.contact.github
-    : social.href,
-})) satisfies Array<{ label: string; href: string; icon: IconName }>;
+type SocialLinkItem = { label: string; href: string; icon: IconName };
 
-const projectCards = [
-  ...portfolioConfig.projects.map((project, index) => ({
-    name: project.name.zh.replace(/^[^\u4e00-\u9fa5A-Za-z]+/, ''),
-    year: ['2026', '2025', '2024'][index] ?? '2024',
-    desc: project.desc.zh,
-    tags: project.tags,
-    icon: project.icon,
-    website: project.website,
-    github: project.github,
+type ProjectCard = {
+  id?: string;
+  slug: string;
+  name: string;
+  year: string;
+  desc: string;
+  contentMarkdown?: string | null;
+  tags: string[];
+  icon: string;
+  website: string;
+  github: string;
+};
+
+type ResourceCard = {
+  id?: string;
+  title: string;
+  url: string;
+  href: string;
+  category: string;
+  desc: string;
+  views: string;
+  marks: string;
+  icon: IconName;
+};
+
+type FriendCard = {
+  name: string;
+  url: string;
+  href: string;
+  desc: string;
+  tone: 'pink' | 'blue';
+  avatarUrl?: string;
+};
+
+type ArchivePost = {
+  date: string;
+  title: string;
+  tags: string[];
+};
+
+type ArchiveGroup = {
+  year: string;
+  count: number;
+  posts: ArchivePost[];
+};
+
+type HomeTrack = {
+  title: string;
+  artist: string;
+  src: string;
+  duration: number;
+};
+
+type GalleryPhoto = {
+  title: string;
+  caption: string;
+  src: string;
+  alt: string;
+};
+
+type RuntimeSite = {
+  profileName: string;
+  headingAccent: string;
+  avatarUrl: string;
+  email: string;
+  github: string;
+  homeStatus: string;
+  musicTracks: readonly HomeTrack[];
+  galleryPhotos: readonly GalleryPhoto[];
+};
+
+type FrontendContent = {
+  notes: NoteMetadata[];
+  archiveGroups: ArchiveGroup[];
+  projects: ProjectCard[];
+  resources: ResourceCard[];
+  friendLinks: FriendCard[];
+  site: RuntimeSite;
+  isLoading: boolean;
+  isFallback: boolean;
+  errorMessage?: string;
+};
+
+type DisplayNote = NoteMetadata & {
+  contentMarkdown?: string | null;
+  coverUrl?: string | null;
+  viewCount?: number;
+  likeCount?: number;
+};
+
+const fallbackProjects: ProjectCard[] = portfolioConfig.projects.map((project, index) => ({
+  slug: project.name.en.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, ''),
+  name: project.name.zh.replace(/^[^\u4e00-\u9fa5A-Za-z]+/, ''),
+  year: ['2026', '2025', '2024'][index] ?? '2024',
+  desc: project.desc.zh,
+  contentMarkdown: '',
+  tags: [...project.tags],
+  icon: project.icon,
+  website: project.website,
+  github: project.github,
+}));
+
+const fallbackResources: ResourceCard[] = resources.map((resource) => ({
+  ...resource,
+  icon: resource.icon as IconName,
+}));
+
+const fallbackFriendLinks: FriendCard[] = friendLinks.map((friend) => ({
+  name: friend.name,
+  url: friend.url,
+  href: friend.url.startsWith('http') ? friend.url : `https://${friend.url}`,
+  desc: friend.desc,
+  tone: friend.tone as 'pink' | 'blue',
+  avatarUrl: undefined,
+}));
+
+const fallbackSite: RuntimeSite = {
+  profileName: portfolioConfig.profile.name,
+  headingAccent: portfolioConfig.hero.headingAccent,
+  avatarUrl: portfolioConfig.profile.avatarUrl,
+  email: portfolioConfig.contact.email,
+  github: portfolioConfig.contact.github,
+  homeStatus: homeContent.site.status,
+  musicTracks: homeTracks,
+  galleryPhotos: homeGalleryPhotos,
+};
+
+const fallbackContent: FrontendContent = {
+  notes: notesMetadata,
+  archiveGroups: archiveGroups.map((group) => ({
+    year: group.year,
+    count: group.count,
+    posts: group.posts.map((post) => ({
+      date: post.date,
+      title: post.title,
+      tags: [...post.tags],
+    })),
   })),
-];
+  projects: fallbackProjects,
+  resources: fallbackResources,
+  friendLinks: fallbackFriendLinks,
+  site: fallbackSite,
+  isLoading: false,
+  isFallback: true,
+};
 
-type ProjectCard = (typeof projectCards)[number];
+function createSocials(github: string): SocialLinkItem[] {
+  return socialLinks.map((social) => ({
+    ...social,
+    href: social.href === 'github' ? github : social.href,
+  }));
+}
+
+function readConfigString(configs: Record<string, unknown>, path: string[], flatKey: string, fallback: string): string {
+  const flatValue = configs[flatKey];
+  if (typeof flatValue === 'string' && flatValue.trim()) {
+    return flatValue;
+  }
+
+  let current: unknown = configs;
+  for (const key of path) {
+    if (!current || typeof current !== 'object' || !(key in current)) {
+      return fallback;
+    }
+
+    current = (current as Record<string, unknown>)[key];
+  }
+
+  return typeof current === 'string' && current.trim() ? current : fallback;
+}
+
+function readConfigArray<T>(
+  configs: Record<string, unknown>,
+  flatKey: string,
+  fallback: readonly T[],
+  normalize: (item: unknown) => T | null,
+): readonly T[] {
+  const value = configs[flatKey];
+  if (!Array.isArray(value)) {
+    return fallback;
+  }
+
+  const normalized = value.map(normalize).filter((item): item is T => item !== null);
+  return normalized.length > 0 ? normalized : fallback;
+}
+
+function normalizeTrack(item: unknown): HomeTrack | null {
+  if (!item || typeof item !== 'object') return null;
+  const source = item as Record<string, unknown>;
+  const title = typeof source.title === 'string' ? source.title : '';
+  const artist = typeof source.artist === 'string' ? source.artist : '';
+  const src = typeof source.src === 'string' ? source.src : '';
+  const duration = typeof source.duration === 'number' ? source.duration : 180;
+  if (!title.trim()) return null;
+  return { title, artist: artist || '未知歌手', src, duration };
+}
+
+function normalizeGalleryPhoto(item: unknown): GalleryPhoto | null {
+  if (!item || typeof item !== 'object') return null;
+  const source = item as Record<string, unknown>;
+  const title = typeof source.title === 'string' ? source.title : '';
+  const src = typeof source.src === 'string' ? source.src : '';
+  if (!title.trim() || !src.trim()) return null;
+  return {
+    title,
+    caption: typeof source.caption === 'string' ? source.caption : title,
+    src,
+    alt: typeof source.alt === 'string' ? source.alt : title,
+  };
+}
+
+function buildRuntimeSite(configs: Record<string, unknown>): RuntimeSite {
+  return {
+    profileName: readConfigString(configs, ['profile', 'name'], 'profile.name', fallbackSite.profileName),
+    headingAccent: readConfigString(configs, ['hero', 'headingAccent'], 'hero.headingAccent', fallbackSite.headingAccent),
+    avatarUrl: readConfigString(configs, ['profile', 'avatarUrl'], 'profile.avatarUrl', fallbackSite.avatarUrl),
+    email: readConfigString(configs, ['contact', 'email'], 'contact.email', fallbackSite.email),
+    github: readConfigString(configs, ['contact', 'github'], 'contact.github', fallbackSite.github),
+    homeStatus: readConfigString(configs, ['home', 'status'], 'home.status', fallbackSite.homeStatus),
+    musicTracks: readConfigArray(configs, 'home.musicTracks', fallbackSite.musicTracks, normalizeTrack),
+    galleryPhotos: readConfigArray(configs, 'home.galleryPhotos', fallbackSite.galleryPhotos, normalizeGalleryPhoto),
+  };
+}
+
+function getDateString(value: string | null | undefined, fallback: string) {
+  if (!value) {
+    return fallback;
+  }
+
+  return value.slice(0, 10);
+}
+
+function apiArticleToNote(article: ApiArticle): DisplayNote {
+  const date = getDateString(article.published_at ?? article.created_at, article.created_at.slice(0, 10));
+
+  return {
+    slug: article.slug,
+    title: {
+      zh: article.title,
+      en: article.title,
+    },
+    summary: {
+      zh: article.summary ?? article.title,
+      en: article.summary ?? article.title,
+    },
+    date,
+    tags: article.tags.map((tag) => tag.name),
+    contentMarkdown: article.content_markdown ?? null,
+    coverUrl: article.cover_url,
+    viewCount: article.view_count,
+    likeCount: article.like_count,
+  };
+}
+
+function buildArchiveGroups(notes: readonly DisplayNote[]): ArchiveGroup[] {
+  const grouped = notes.reduce<Record<string, ArchivePost[]>>((acc, note) => {
+    const year = note.date.slice(0, 4) || '未归档';
+    const month = note.date.slice(5, 7) || '01';
+    const day = note.date.slice(8, 10) || '01';
+
+    acc[year] = acc[year] ?? [];
+    acc[year].push({
+      date: `${month}.${day}`,
+      title: note.title.zh,
+      tags: note.tags,
+    });
+
+    return acc;
+  }, {});
+
+  return Object.entries(grouped)
+    .sort(([left], [right]) => right.localeCompare(left))
+    .map(([year, posts]) => ({
+      year,
+      count: posts.length,
+      posts,
+    }));
+}
+
+function apiProjectToCard(project: ApiProject, index: number): ProjectCard {
+  const year = getDateString(project.created_at, new Date().getFullYear().toString()).slice(0, 4);
+  const nameParts = project.name.match(/[A-Za-z0-9\u4e00-\u9fa5]/g) ?? ['P', String(index + 1)];
+
+  return {
+    id: project.id,
+    slug: project.slug,
+    name: project.name,
+    year,
+    desc: project.description ?? project.name,
+    contentMarkdown: project.content_markdown,
+    tags: project.tech_stack,
+    icon: nameParts.slice(0, 2).join('').toUpperCase(),
+    website: project.demo_url ?? project.github_url ?? '#',
+    github: project.github_url ?? project.demo_url ?? '#',
+  };
+}
+
+function displayUrl(value: string) {
+  try {
+    return new URL(value).hostname;
+  } catch {
+    return value;
+  }
+}
+
+function iconForShare(share: ApiShare): IconName {
+  const source = `${share.type} ${share.category.name}`.toLowerCase();
+  if (source.includes('ai') || source.includes('人工智能')) return 'spark';
+  if (source.includes('tool') || source.includes('工具')) return 'code';
+  if (source.includes('read') || source.includes('阅读') || source.includes('文章')) return 'book';
+  return 'external';
+}
+
+function apiShareToResource(share: ApiShare): ResourceCard {
+  return {
+    id: share.id,
+    title: share.title,
+    url: displayUrl(share.external_url),
+    href: share.external_url,
+    category: share.category.name || share.type,
+    desc: share.description ?? share.title,
+    views: '外部链接',
+    marks: share.tags[0]?.name ?? share.type,
+    icon: iconForShare(share),
+  };
+}
+
+function apiFriendToCard(friend: ApiFriendLink, index: number): FriendCard {
+  return {
+    name: friend.name,
+    url: displayUrl(friend.url),
+    href: friend.url,
+    desc: friend.description ?? friend.url,
+    tone: index % 2 === 0 ? 'pink' : 'blue',
+    avatarUrl: friend.avatar_url ?? undefined,
+  };
+}
+
+function buildFrontendContent(
+  apiContent: Awaited<ReturnType<typeof fetchPublicContent>>,
+): FrontendContent {
+  const { articles: apiArticles, projects: apiProjects, shares: apiShares, friendLinks: apiFriendLinks, siteConfig, available } = apiContent;
+  const notes = apiArticles.length > 0 ? apiArticles.map(apiArticleToNote) : fallbackContent.notes;
+  const projects = available.projects ? apiProjects.map(apiProjectToCard) : fallbackContent.projects;
+  const apiResources = available.shares ? apiShares.map(apiShareToResource) : fallbackContent.resources;
+  const apiFriends = available.friendLinks ? apiFriendLinks.map(apiFriendToCard) : fallbackContent.friendLinks;
+  const hasApiConnection = available.articles || available.projects || available.shares || available.friendLinks || available.siteConfig;
+
+  return {
+    notes: available.articles ? apiArticles.map(apiArticleToNote) : notes,
+    archiveGroups: available.articles ? buildArchiveGroups(apiArticles.map(apiArticleToNote)) : fallbackContent.archiveGroups,
+    projects,
+    resources: apiResources,
+    friendLinks: apiFriends,
+    site: buildRuntimeSite(siteConfig),
+    isLoading: false,
+    isFallback: !hasApiConnection,
+    errorMessage: hasApiConnection ? undefined : '本地内容',
+  };
+}
+
+function useFrontendContent(): FrontendContent {
+  const [content, setContent] = useState<FrontendContent>({ ...fallbackContent, isLoading: true });
+
+  useEffect(() => {
+    const controller = new AbortController();
+
+    fetchPublicContent(controller.signal)
+      .then((apiContent) => {
+        if (!controller.signal.aborted) {
+          setContent(buildFrontendContent(apiContent));
+        }
+      })
+      .catch(() => {
+        if (!controller.signal.aborted) {
+          setContent({ ...fallbackContent, isLoading: false, isFallback: true, errorMessage: '本地内容' });
+        }
+      });
+
+    return () => controller.abort();
+  }, []);
+
+  return content;
+}
+
+function renderMarkdownLite(markdown: string) {
+  const lines = markdown.split(/\r?\n/);
+  const elements: ReactNode[] = [];
+  let listItems: string[] = [];
+
+  const flushList = () => {
+    if (listItems.length === 0) {
+      return;
+    }
+
+    elements.push(
+      <ul key={`list-${elements.length}`}>
+        {listItems.map((item) => <li key={item}>{item}</li>)}
+      </ul>,
+    );
+    listItems = [];
+  };
+
+  lines.forEach((line, index) => {
+    const trimmed = line.trim();
+
+    if (!trimmed) {
+      flushList();
+      return;
+    }
+
+    if (trimmed.startsWith('- ')) {
+      listItems.push(trimmed.slice(2));
+      return;
+    }
+
+    flushList();
+
+    if (trimmed.startsWith('## ')) {
+      elements.push(<h2 key={`h2-${index}`}>{trimmed.slice(3)}</h2>);
+      return;
+    }
+
+    if (trimmed.startsWith('# ')) {
+      return;
+    }
+
+    elements.push(<p key={`p-${index}`}>{trimmed}</p>);
+  });
+
+  flushList();
+  return elements;
+}
 
 type LikeState = {
   count: number;
@@ -261,11 +692,35 @@ type LikeState = {
 
 const SITE_LIKE_STORAGE_KEY = 'xiyu-feather:site-like';
 const ARTICLE_LIKE_STORAGE_PREFIX = 'xiyu-feather:article-like:';
+const LIKE_CLIENT_ID_STORAGE_KEY = 'xiyu-feather:like-client-id';
 const SITE_LIKE_BASE_COUNT = 12508;
 const ARTICLE_LIKE_BASE_COUNT = 128;
 
 function getArticleLikeStorageKey(slug: string) {
   return `${ARTICLE_LIKE_STORAGE_PREFIX}${encodeURIComponent(slug)}`;
+}
+
+function createLikeClientId() {
+  if (crypto.randomUUID) {
+    return crypto.randomUUID();
+  }
+
+  return `client-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 12)}`;
+}
+
+function getLikeClientId() {
+  try {
+    const stored = window.localStorage.getItem(LIKE_CLIENT_ID_STORAGE_KEY);
+    if (stored) {
+      return stored;
+    }
+
+    const next = createLikeClientId();
+    window.localStorage.setItem(LIKE_CLIENT_ID_STORAGE_KEY, next);
+    return next;
+  } catch {
+    return createLikeClientId();
+  }
 }
 
 function readLikeState(storageKey: string, baseCount: number): LikeState {
@@ -389,7 +844,8 @@ function formatPlayerTime(seconds: number) {
   return `${minutes}:${remainingSeconds}`;
 }
 
-function MusicPlayer() {
+function MusicPlayer({ tracks }: { tracks: readonly HomeTrack[] }) {
+  const safeTracks = tracks.length > 0 ? tracks : homeTracks;
   const audioRef = useRef<HTMLAudioElement>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
   const synthGainRef = useRef<GainNode | null>(null);
@@ -401,9 +857,9 @@ function MusicPlayer() {
   const [trackIndex, setTrackIndex] = useState(0);
   const [isPlaying, setIsPlaying] = useState(false);
   const [currentTime, setCurrentTime] = useState<number>(0);
-  const [duration, setDuration] = useState<number>(homeTracks[0].duration);
+  const [duration, setDuration] = useState<number>(safeTracks[0].duration);
   const [playerMessage, setPlayerMessage] = useState('');
-  const currentTrack = homeTracks[trackIndex];
+  const currentTrack = safeTracks[trackIndex] ?? safeTracks[0];
   const hasAudioSource = currentTrack.src.trim().length > 0;
   const activeDuration = Math.max(1, hasAudioSource ? duration : currentTrack.duration);
   const progressPercent = Math.min(100, Math.max(0, (currentTime / activeDuration) * 100));
@@ -437,15 +893,15 @@ function MusicPlayer() {
   }, []);
 
   const selectTrack = useCallback((nextIndex: number) => {
-    const normalizedIndex = (nextIndex + homeTracks.length) % homeTracks.length;
+    const normalizedIndex = (nextIndex + safeTracks.length) % safeTracks.length;
 
     setPlayerMessage('');
     setCurrentTime(0);
     currentTimeRef.current = 0;
     trackIndexRef.current = normalizedIndex;
-    setDuration(homeTracks[normalizedIndex].duration);
+    setDuration(safeTracks[normalizedIndex].duration);
     setTrackIndex(normalizedIndex);
-  }, []);
+  }, [safeTracks]);
 
   const changeTrack = useCallback((step: -1 | 1) => {
     selectTrack(trackIndexRef.current + step);
@@ -710,10 +1166,10 @@ const PixelAvatar = ({ compact = false }: { compact?: boolean }) => (
   </svg>
 );
 
-const ProfileAvatar = ({ compact = false }: { compact?: boolean }) => (
+const ProfileAvatar = ({ compact = false, src = portfolioConfig.profile.avatarUrl }: { compact?: boolean; src?: string }) => (
   <img
     className={compact ? 'profile-avatar compact' : 'profile-avatar'}
-    src={portfolioConfig.profile.avatarUrl}
+    src={src}
     alt={uiLabels.profileAvatarAria}
     loading="lazy"
     decoding="async"
@@ -886,7 +1342,18 @@ function PageHero({ eyebrow, title, desc, icon }: { eyebrow: string; title: stri
   );
 }
 
-type GalleryPhoto = (typeof homeGalleryPhotos)[number];
+function DataStatePill({ content }: { content: FrontendContent }) {
+  if (!content.isLoading && !content.isFallback) {
+    return null;
+  }
+
+  return (
+    <div className="data-state-pill" aria-live="polite">
+      <Icon name={content.isLoading ? 'clock' : 'spark'} />
+      <span>{content.isLoading ? '正在同步内容...' : content.errorMessage ?? '本地内容'}</span>
+    </div>
+  );
+}
 
 function PhotoGalleryModal({
   photos,
@@ -1033,18 +1500,30 @@ function PhotoGalleryModal({
 
 function HomePage({
   now,
+  notes,
+  projects,
+  resources,
+  site,
+  socialItems,
   onNavigate,
   onOpenArticle,
   onOpenProject,
+  onOutboundClick,
   onCopyEmail,
   emailCopied,
   siteLike,
   onToggleSiteLike,
 }: {
   now: Date;
+  notes: DisplayNote[];
+  projects: ProjectCard[];
+  resources: ResourceCard[];
+  site: RuntimeSite;
+  socialItems: SocialLinkItem[];
   onNavigate: (page: PageKey) => void;
-  onOpenArticle: (note: NoteMetadata) => void;
+  onOpenArticle: (note: DisplayNote) => void;
   onOpenProject: (project: ProjectCard) => void;
+  onOutboundClick: (targetType: 'share' | 'project' | 'social' | 'external', targetId: string | undefined, targetUrl: string) => void;
   onCopyEmail: () => void;
   emailCopied: boolean;
   siteLike: LikeState;
@@ -1052,12 +1531,18 @@ function HomePage({
 }) {
   const calendarDays = useMemo(() => getCalendarDays(now), [now]);
   const carouselStep = Math.floor(now.getTime() / 5000);
-  const latestNoteIndex = carouselStep % notesMetadata.length;
-  const projectIndex = carouselStep % projectCards.length;
-  const recommendationIndex = carouselStep % homeRecommendations.length;
-  const latestNote = notesMetadata[latestNoteIndex];
-  const featuredProject = projectCards[projectIndex];
-  const recommendation = homeRecommendations[recommendationIndex];
+  const safeNotes = notes.length > 0 ? notes : fallbackContent.notes;
+  const safeProjects = projects.length > 0 ? projects : fallbackContent.projects;
+  const latestNoteIndex = carouselStep % safeNotes.length;
+  const projectIndex = carouselStep % safeProjects.length;
+  const recommendationIndex = carouselStep % Math.max(1, resources.length || homeRecommendations.length);
+  const latestNote = safeNotes[latestNoteIndex];
+  const featuredProject = safeProjects[projectIndex];
+  const recommendationResource = resources.length > 0 ? resources[recommendationIndex % resources.length] : null;
+  const recommendation = recommendationResource
+    ? `${recommendationResource.title}：${recommendationResource.desc}`
+    : homeRecommendations[recommendationIndex % homeRecommendations.length];
+  const galleryPhotos = site.galleryPhotos.length > 0 ? site.galleryPhotos : homeGalleryPhotos;
   const hh = String(now.getHours()).padStart(2, '0');
   const mm = String(now.getMinutes()).padStart(2, '0');
   const ss = String(now.getSeconds()).padStart(2, '0');
@@ -1067,30 +1552,30 @@ function HomePage({
   const showPreviousPhoto = useCallback(() => {
     setActivePhotoIndex((current) => (
       current === null
-        ? homeGalleryPhotos.length - 1
-        : (current - 1 + homeGalleryPhotos.length) % homeGalleryPhotos.length
+        ? galleryPhotos.length - 1
+        : (current - 1 + galleryPhotos.length) % galleryPhotos.length
     ));
-  }, []);
+  }, [galleryPhotos]);
   const showNextPhoto = useCallback(() => {
     setActivePhotoIndex((current) => (
       current === null
         ? 0
-        : (current + 1) % homeGalleryPhotos.length
+        : (current + 1) % galleryPhotos.length
     ));
-  }, []);
+  }, [galleryPhotos]);
 
   return (
     <>
     <section className="bento-shell">
       <aside className="glass-card sidebar-card">
         <div className="sidebar-profile">
-          <ProfileAvatar compact />
+          <ProfileAvatar compact src={site.avatarUrl} />
           <div>
             <p className="eyebrow">{homeContent.site.eyebrow}</p>
-            <h1>{portfolioConfig.profile.name}</h1>
+            <h1>{site.profileName}</h1>
           </div>
         </div>
-        <span className="status-pill">{homeContent.site.status}</span>
+        <span className="status-pill">{site.homeStatus}</span>
         <div className="side-menu" aria-label={uiLabels.homeMenuAria}>
           {homeMenuItems.map((item, index) => (
             <button
@@ -1134,12 +1619,12 @@ function HomePage({
 
       <section className="glass-card intro-card">
         <div className="intro-avatar-wrap">
-          <ProfileAvatar />
+          <ProfileAvatar src={site.avatarUrl} />
         </div>
         <div className="intro-copy">
           <p className="eyebrow">{homeContent.intro.eyebrow}</p>
           <h2>
-            {timeGreeting}，我是<span>{portfolioConfig.hero.headingAccent}</span>
+            {timeGreeting}，我是<span>{site.headingAccent}</span>
           </h2>
         </div>
       </section>
@@ -1150,7 +1635,7 @@ function HomePage({
           <h2>{homeContent.social.title}</h2>
         </div>
         <div className="social-grid">
-          {socials.map((social) => (
+          {socialItems.map((social) => (
             social.href === 'email' ? (
               <button
                 type="button"
@@ -1163,7 +1648,7 @@ function HomePage({
                 <span>{emailCopied ? uiLabels.emailCopied : social.label}</span>
               </button>
             ) : (
-              <a href={social.href} className="social-button" key={social.label} target="_blank" rel="noreferrer">
+              <a href={social.href} className="social-button" key={social.label} target="_blank" rel="noreferrer" onClick={() => onOutboundClick('social', social.label, social.href)}>
                 <Icon name={social.icon} />
                 <span>{social.label}</span>
               </a>
@@ -1210,7 +1695,7 @@ function HomePage({
             <p className="eyebrow">{homeContent.articles.eyebrow}</p>
             <h2>{homeContent.articles.title}</h2>
           </div>
-          <span className="count-bubble">{notesMetadata.length}</span>
+          <span className="count-bubble">{safeNotes.length}</span>
         </div>
         <div className="article-list">
           <button type="button" key={latestNote.slug} className="article-item" onClick={() => onOpenArticle(latestNote)}>
@@ -1219,7 +1704,7 @@ function HomePage({
             <p>{latestNote.summary.zh}</p>
           </button>
           <div className="carousel-dots" aria-hidden="true">
-            {notesMetadata.slice(0, 3).map((note, index) => (
+            {safeNotes.slice(0, 3).map((note, index) => (
               <span className={index === latestNoteIndex % 3 ? 'active' : ''} key={note.slug} />
             ))}
           </div>
@@ -1240,7 +1725,7 @@ function HomePage({
             </div>
           </button>
           <div className="carousel-dots" aria-hidden="true">
-            {projectCards.slice(0, 3).map((project, index) => (
+            {safeProjects.slice(0, 3).map((project, index) => (
               <span className={index === projectIndex % 3 ? 'active' : ''} key={project.name} />
             ))}
           </div>
@@ -1255,14 +1740,17 @@ function HomePage({
         <h2>{homeContent.recommendation.title}</h2>
         <p>{recommendation}</p>
         <div className="carousel-dots" aria-hidden="true">
-          {homeRecommendations.map((item, index) => (
-            <span className={index === recommendationIndex ? 'active' : ''} key={item} />
+          {(recommendationResource ? resources : homeRecommendations).slice(0, 6).map((item, index) => (
+            <span
+              className={index === recommendationIndex % 6 ? 'active' : ''}
+              key={typeof item === 'string' ? item : item.href}
+            />
           ))}
         </div>
         <button type="button" onClick={() => onNavigate('share')}>{homeContent.recommendation.buttonLabel}</button>
       </section>
 
-      <MusicPlayer />
+      <MusicPlayer tracks={site.musicTracks} />
 
       <section className="glass-card like-card">
         <button
@@ -1282,7 +1770,7 @@ function HomePage({
     </section>
     {isGalleryOpen && createPortal(
       <PhotoGalleryModal
-        photos={homeGalleryPhotos}
+        photos={galleryPhotos}
         activeIndex={activePhotoIndex}
         onSelect={setActivePhotoIndex}
         onPrevious={showPreviousPhoto}
@@ -1296,7 +1784,78 @@ function HomePage({
   );
 }
 
-function BlogPage({ onOpenArticle }: { onOpenArticle: (note: NoteMetadata) => void }) {
+function BlogPage({
+  notes,
+  archiveGroups,
+  resources,
+  onOpenArticle,
+  onOutboundClick,
+}: {
+  notes: DisplayNote[];
+  archiveGroups: ArchiveGroup[];
+  resources: ResourceCard[];
+  onOpenArticle: (note: DisplayNote) => void;
+  onOutboundClick: (targetType: 'share', targetId: string | undefined, targetUrl: string) => void;
+}) {
+  const noteList = notes.length > 0 ? notes : fallbackContent.notes;
+  const groups = archiveGroups.length > 0 ? archiveGroups : fallbackContent.archiveGroups;
+  const resourceList = resources.length > 0 ? resources : fallbackContent.resources;
+  const [searchQuery, setSearchQuery] = useState('');
+  const [isSearching, setIsSearching] = useState(false);
+  const [searchResults, setSearchResults] = useState<{ articles: DisplayNote[]; resources: ResourceCard[] } | null>(null);
+  const trimmedQuery = searchQuery.trim();
+  const visibleSearchResults = trimmedQuery.length >= 2 ? searchResults : null;
+  const visibleIsSearching = trimmedQuery.length >= 2 && isSearching;
+
+  useEffect(() => {
+    if (trimmedQuery.length < 2) {
+      return undefined;
+    }
+
+    const controller = new AbortController();
+    const timer = window.setTimeout(() => {
+      setIsSearching(true);
+      searchPublicContent(trimmedQuery, controller.signal)
+        .then((result) => {
+          if (controller.signal.aborted) {
+            return;
+          }
+
+          if (result) {
+            setSearchResults({
+              articles: result.articles.map(apiArticleToNote),
+              resources: result.shares.map(apiShareToResource),
+            });
+            return;
+          }
+
+          const lowerQuery = trimmedQuery.toLowerCase();
+          setSearchResults({
+            articles: noteList.filter((note) => (
+              note.title.zh.toLowerCase().includes(lowerQuery)
+              || note.summary.zh.toLowerCase().includes(lowerQuery)
+              || note.tags.some((tag) => tag.toLowerCase().includes(lowerQuery))
+            )),
+            resources: resourceList.filter((resource) => (
+              resource.title.toLowerCase().includes(lowerQuery)
+              || resource.desc.toLowerCase().includes(lowerQuery)
+              || resource.category.toLowerCase().includes(lowerQuery)
+            )),
+          });
+        })
+        .finally(() => {
+          if (!controller.signal.aborted) {
+            setIsSearching(false);
+          }
+        });
+    }, 260);
+
+    return () => {
+      window.clearTimeout(timer);
+      controller.abort();
+    };
+  }, [noteList, resourceList, trimmedQuery]);
+
   return (
     <section className="page-shell">
       <PageHero {...pageHeroes.blog} />
@@ -1306,9 +1865,56 @@ function BlogPage({ onOpenArticle }: { onOpenArticle: (note: NoteMetadata) => vo
             {item}
           </button>
         ))}
+        <input
+          className="soft-search-input"
+          value={searchQuery}
+          onChange={(event) => setSearchQuery(event.currentTarget.value)}
+          placeholder="搜索文章 / 分享"
+          aria-label="搜索文章和分享"
+        />
       </div>
+      {trimmedQuery.length >= 2 && (
+        <section className="search-results-card glass-card">
+          <div className="mini-title">
+            <Icon name="spark" />
+            <span>{visibleIsSearching ? '搜索中...' : `Search · ${trimmedQuery}`}</span>
+          </div>
+          {!visibleIsSearching && visibleSearchResults && visibleSearchResults.articles.length === 0 && visibleSearchResults.resources.length === 0 && (
+            <p className="empty-copy">没有找到相关内容。</p>
+          )}
+          {!visibleIsSearching && visibleSearchResults && visibleSearchResults.articles.length > 0 && (
+            <div className="search-result-group">
+              {visibleSearchResults.articles.map((note) => (
+                <button type="button" className="post-row" onClick={() => onOpenArticle(note)} key={note.slug}>
+                  <time>{note.date}</time>
+                  <h3>{note.title.zh}</h3>
+                  <div className="tag-row">
+                    {note.tags.map((tag) => <span className="soft-tag" key={tag}>{tag}</span>)}
+                  </div>
+                </button>
+              ))}
+            </div>
+          )}
+          {!visibleIsSearching && visibleSearchResults && visibleSearchResults.resources.length > 0 && (
+            <div className="search-resource-row">
+              {visibleSearchResults.resources.map((resource) => (
+                <a className="glass-action" href={resource.href} target="_blank" rel="noreferrer" onClick={() => onOutboundClick('share', resource.id ?? resource.title, resource.href)} key={resource.href}>
+                  <Icon name={resource.icon} />
+                  {resource.title}
+                </a>
+              ))}
+            </div>
+          )}
+        </section>
+      )}
+      {groups.length === 0 && trimmedQuery.length < 2 && (
+        <section className="empty-state glass-card">
+          <Icon name="book" />
+          <p>还没有发布文章。</p>
+        </section>
+      )}
       <div className="archive-stack">
-        {archiveGroups.map((group) => (
+        {groups.map((group) => (
           <article className="year-card glass-card" key={group.year}>
             <div className="year-head">
               <div>
@@ -1319,7 +1925,7 @@ function BlogPage({ onOpenArticle }: { onOpenArticle: (note: NoteMetadata) => vo
             </div>
             <div className="post-rows">
               {group.posts.map((post) => {
-                const linkedNote = notesMetadata.find((note) => note.title.zh === post.title);
+                const linkedNote = noteList.find((note) => note.title.zh === post.title);
                 const archiveNote = linkedNote ?? {
                   slug: `${group.year}-${post.date}-${post.title}`,
                   title: { zh: post.title, en: post.title },
@@ -1356,12 +1962,28 @@ function BlogPage({ onOpenArticle }: { onOpenArticle: (note: NoteMetadata) => vo
   );
 }
 
-function ProjectsPage({ onOpenProject }: { onOpenProject: (project: ProjectCard) => void }) {
+function ProjectsPage({
+  projects,
+  onOpenProject,
+  onOutboundClick,
+}: {
+  projects: ProjectCard[];
+  onOpenProject: (project: ProjectCard) => void;
+  onOutboundClick: (targetType: 'project', targetId: string | undefined, targetUrl: string) => void;
+}) {
+  const projectList = projects.length > 0 ? projects : fallbackContent.projects;
+
   return (
     <section className="page-shell">
       <PageHero {...pageHeroes.projects} />
+      {projectList.length === 0 && (
+        <section className="empty-state glass-card">
+          <Icon name="folder" />
+          <p>还没有发布项目。</p>
+        </section>
+      )}
       <div className="portfolio-grid">
-        {projectCards.map((project, index) => (
+        {projectList.map((project, index) => (
           <article className="portfolio-card glass-card" key={project.name}>
             <div className="project-icon">{project.icon}</div>
             <div className="project-title-row">
@@ -1382,11 +2004,11 @@ function ProjectsPage({ onOpenProject }: { onOpenProject: (project: ProjectCard)
                 <Icon name="pen" />
                 {uiLabels.detailAction}
               </button>
-              <a className="glass-action" href={project.website} target="_blank" rel="noreferrer">
+              <a className="glass-action" href={project.website} target="_blank" rel="noreferrer" onClick={() => onOutboundClick('project', project.id ?? project.slug, project.website)}>
                 <Icon name="external" />
                 {uiLabels.projectWebsite}
               </a>
-              <a className="glass-action" href={project.github} target="_blank" rel="noreferrer">
+              <a className="glass-action" href={project.github} target="_blank" rel="noreferrer" onClick={() => onOutboundClick('project', project.id ?? project.slug, project.github)}>
                 <Icon name="github" />
                 {uiLabels.projectGithub}
               </a>
@@ -1398,7 +2020,17 @@ function ProjectsPage({ onOpenProject }: { onOpenProject: (project: ProjectCard)
   );
 }
 
-function ProjectDetailPage({ project, onNavigate }: { project: ProjectCard; onNavigate: (page: PageKey) => void }) {
+function ProjectDetailPage({
+  project,
+  onNavigate,
+  onOutboundClick,
+}: {
+  project: ProjectCard;
+  onNavigate: (page: PageKey) => void;
+  onOutboundClick: (targetType: 'project', targetId: string | undefined, targetUrl: string) => void;
+}) {
+  const hasMarkdownContent = Boolean(project.contentMarkdown?.trim());
+
   return (
     <section className="article-layout">
       <article className="reader-card glass-card">
@@ -1417,7 +2049,7 @@ function ProjectDetailPage({ project, onNavigate }: { project: ProjectCard; onNa
         <div className="article-body">
           <section>
             <h2 id="project-overview">{uiLabels.projectOverviewTitle}</h2>
-            <p>{project.desc}</p>
+            {hasMarkdownContent ? renderMarkdownLite(project.contentMarkdown ?? '') : <p>{project.desc}</p>}
           </section>
           <section>
             <h2 id="project-stack">{uiLabels.projectStackTitle}</h2>
@@ -1430,11 +2062,11 @@ function ProjectDetailPage({ project, onNavigate }: { project: ProjectCard; onNa
           <section>
             <h2 id="project-links">{uiLabels.projectLinksTitle}</h2>
             <div className="action-row">
-              <a className="glass-action" href={project.website} target="_blank" rel="noreferrer">
+              <a className="glass-action" href={project.website} target="_blank" rel="noreferrer" onClick={() => onOutboundClick('project', project.id ?? project.slug, project.website)}>
                 <Icon name="external" />
                 {uiLabels.projectWebsite}
               </a>
-              <a className="glass-action" href={project.github} target="_blank" rel="noreferrer">
+              <a className="glass-action" href={project.github} target="_blank" rel="noreferrer" onClick={() => onOutboundClick('project', project.id ?? project.slug, project.github)}>
                 <Icon name="github" />
                 {uiLabels.projectGithub}
               </a>
@@ -1468,12 +2100,22 @@ function ProjectDetailPage({ project, onNavigate }: { project: ProjectCard; onNa
   );
 }
 
-function AboutPage({ onCopyEmail, emailCopied }: { onCopyEmail: () => void; emailCopied: boolean }) {
+function AboutPage({
+  site,
+  onCopyEmail,
+  emailCopied,
+  onOutboundClick,
+}: {
+  site: RuntimeSite;
+  onCopyEmail: () => void;
+  emailCopied: boolean;
+  onOutboundClick: (targetType: 'social', targetId: string | undefined, targetUrl: string) => void;
+}) {
   return (
     <section className="page-shell calm-page">
       <article className="about-note glass-card">
         <div className="about-top">
-          <ProfileAvatar />
+          <ProfileAvatar src={site.avatarUrl} />
           <div>
             <p className="eyebrow">{aboutContent.eyebrow}</p>
             <h1>{aboutContent.title}</h1>
@@ -1498,7 +2140,7 @@ function AboutPage({ onCopyEmail, emailCopied }: { onCopyEmail: () => void; emai
           ))}
         </div>
         <div className="round-actions">
-          <a href={portfolioConfig.contact.github} target="_blank" rel="noreferrer" aria-label={uiLabels.githubAria}>
+          <a href={site.github} target="_blank" rel="noreferrer" aria-label={uiLabels.githubAria} onClick={() => onOutboundClick('social', 'GitHub', site.github)}>
             <Icon name="github" />
           </a>
           <button
@@ -1518,15 +2160,23 @@ function AboutPage({ onCopyEmail, emailCopied }: { onCopyEmail: () => void; emai
   );
 }
 
-function SharePage() {
+function SharePage({
+  resources,
+  onOutboundClick,
+}: {
+  resources: ResourceCard[];
+  onOutboundClick: (targetType: 'share', targetId: string | undefined, targetUrl: string) => void;
+}) {
+  const resourceList = resources.length > 0 ? resources : fallbackContent.resources;
   const resourceFilters = useMemo(
-    () => ['全部', ...Array.from(new Set(resources.map((resource) => resource.category)))] as const,
-    [],
+    () => ['全部', ...Array.from(new Set(resourceList.map((resource) => resource.category)))],
+    [resourceList],
   );
   const [activeFilter, setActiveFilter] = useState<string>('全部');
-  const visibleResources = activeFilter === '全部'
-    ? resources
-    : resources.filter((resource) => resource.category === activeFilter);
+  const activeResourceFilter = resourceFilters.includes(activeFilter) ? activeFilter : '全部';
+  const visibleResources = activeResourceFilter === '全部'
+    ? resourceList
+    : resourceList.filter((resource) => resource.category === activeResourceFilter);
 
   return (
     <section className="page-shell">
@@ -1535,7 +2185,7 @@ function SharePage() {
         {resourceFilters.map((item) => (
           <button
             type="button"
-            className={activeFilter === item ? 'filter-chip active' : 'filter-chip'}
+            className={activeResourceFilter === item ? 'filter-chip active' : 'filter-chip'}
             onClick={() => setActiveFilter(item)}
             key={item}
           >
@@ -1544,6 +2194,12 @@ function SharePage() {
         ))}
       </div>
       <div className="resource-grid">
+        {visibleResources.length === 0 && (
+          <section className="empty-state glass-card">
+            <Icon name="spark" />
+            <p>还没有分享内容。</p>
+          </section>
+        )}
         {visibleResources.map((resource, index) => (
           <article className={index < 2 ? 'resource-card glass-card featured-resource' : 'resource-card glass-card'} key={resource.title}>
             <div className="resource-icon">
@@ -1552,7 +2208,7 @@ function SharePage() {
             <div>
               <span className="soft-tag">{resource.category}</span>
               <h2>{resource.title}</h2>
-              <a href={resource.href} target="_blank" rel="noreferrer">{resource.url}</a>
+              <a href={resource.href} target="_blank" rel="noreferrer" onClick={() => onOutboundClick('share', resource.id ?? resource.title, resource.href)}>{resource.url}</a>
               <p>{resource.desc}</p>
             </div>
             <div className="resource-meta">
@@ -1566,24 +2222,32 @@ function SharePage() {
   );
 }
 
-function BloggersPage() {
+function BloggersPage({ friendLinks }: { friendLinks: FriendCard[] }) {
+  const friendList = friendLinks.length > 0 ? friendLinks : fallbackContent.friendLinks;
+
   return (
     <section className="page-shell">
       <PageHero {...pageHeroes.bloggers} />
       <div className="toggle-card glass-card">
         <button type="button" className="filter-chip active">{uiLabels.bloggersPrimaryTab}</button>
         <button type="button" className="filter-chip">{uiLabels.bloggersSecondaryTab}</button>
-        <span>{uiLabels.bloggersCountPrefix} {friendLinks.length} {uiLabels.bloggersCountSuffix}</span>
+        <span>{uiLabels.bloggersCountPrefix} {friendList.length} {uiLabels.bloggersCountSuffix}</span>
       </div>
       <div className="friend-grid">
-        {friendLinks.map((friend, index) => (
+        {friendList.length === 0 && (
+          <section className="empty-state glass-card">
+            <Icon name="heart" />
+            <p>还没有友链。</p>
+          </section>
+        )}
+        {friendList.map((friend, index) => (
           <article className={index < 2 ? 'friend-card glass-card friend-large' : 'friend-card glass-card'} key={friend.name}>
             <div className={`friend-avatar ${friend.tone}`}>
-              <PixelAvatar compact />
+              {friend.avatarUrl ? <img src={friend.avatarUrl} alt="" /> : <PixelAvatar compact />}
             </div>
             <div>
               <h2>{friend.name}</h2>
-              <a href="https://example.com" target="_blank" rel="noreferrer">{friend.url}</a>
+              <a href={friend.href} target="_blank" rel="noreferrer">{friend.url}</a>
               <p>{friend.desc}</p>
             </div>
           </article>
@@ -1598,15 +2262,21 @@ function ArticlePage({
   like,
   onToggleLike,
 }: {
-  note: NoteMetadata;
+  note: DisplayNote;
   like: LikeState;
-  onToggleLike: (note: NoteMetadata) => void;
+  onToggleLike: (note: DisplayNote) => void;
 }) {
+  const hasMarkdownContent = Boolean(note.contentMarkdown?.trim());
+
   return (
     <section className="article-layout">
       <article className="reader-card glass-card">
         <div className="article-cover">
-          <AlbumIllustration />
+          {note.coverUrl ? (
+            <img className="article-cover-image" src={note.coverUrl} alt="" />
+          ) : (
+            <AlbumIllustration />
+          )}
         </div>
         <div className="article-meta-line">
           {note.tags.map((tag) => (
@@ -1617,27 +2287,31 @@ function ArticlePage({
         <h1>{note.title.zh}</h1>
         <p className="article-lead">{note.summary.zh}</p>
         <div className="article-body">
-          {articleDetailContent.sections.map((section) => (
-            <section key={section.id}>
-              <h2 id={section.id}>{section.title}</h2>
-              {section.paragraphs.map((paragraph) => (
-                <p key={paragraph}>{paragraph}</p>
-              ))}
-              {'list' in section && (
-                <ul>
-                  {section.list.map((item) => (
-                    <li key={item}>{item}</li>
-                  ))}
-                </ul>
-              )}
-              {'figure' in section && (
-                <div className="inline-figure">
-                  <Icon name="image" />
-                  <span>{section.figure}</span>
-                </div>
-              )}
-            </section>
-          ))}
+          {hasMarkdownContent ? (
+            renderMarkdownLite(note.contentMarkdown ?? '')
+          ) : (
+            articleDetailContent.sections.map((section) => (
+              <section key={section.id}>
+                <h2 id={section.id}>{section.title}</h2>
+                {section.paragraphs.map((paragraph) => (
+                  <p key={paragraph}>{paragraph}</p>
+                ))}
+                {'list' in section && (
+                  <ul>
+                    {section.list.map((item) => (
+                      <li key={item}>{item}</li>
+                    ))}
+                  </ul>
+                )}
+                {'figure' in section && (
+                  <div className="inline-figure">
+                    <Icon name="image" />
+                    <span>{section.figure}</span>
+                  </div>
+                )}
+              </section>
+            ))
+          )}
         </div>
       </article>
       <aside className="reader-aside">
@@ -1653,9 +2327,13 @@ function ArticlePage({
             <Icon name="list" />
             <span>{articleDetailContent.aside.tocTitle}</span>
           </div>
-          {articleDetailContent.sections.map((section, index) => (
-            <a className={index === 0 ? 'active' : ''} href={`#${section.id}`} key={section.id}>{section.title}</a>
-          ))}
+          {hasMarkdownContent ? (
+            <a className="active" href="#">{note.title.zh}</a>
+          ) : (
+            articleDetailContent.sections.map((section, index) => (
+              <a className={index === 0 ? 'active' : ''} href={`#${section.id}`} key={section.id}>{section.title}</a>
+            ))
+          )}
         </section>
         <section className="aside-card glass-card like-aside">
           <button
@@ -1692,13 +2370,16 @@ function AvatarPage() {
   );
 }
 
-function App() {
+function PublicApp() {
+  const content = useFrontendContent();
+  const socialItems = useMemo(() => createSocials(content.site.github), [content.site.github]);
+  const likeClientId = useMemo(() => getLikeClientId(), []);
   const [page, setPage] = useState<PageKey>(() => pageFromHash());
   const [renderedPage, setRenderedPage] = useState<PageKey>(() => pageFromHash());
   const [transitionPhase, setTransitionPhase] = useState<'idle' | 'exit' | 'enter'>('idle');
   const [now, setNow] = useState(() => new Date());
-  const [selectedArticle, setSelectedArticle] = useState<NoteMetadata>(() => notesMetadata[0]);
-  const [selectedProjectName, setSelectedProjectName] = useState(() => projectCards[0]?.name ?? '');
+  const [selectedArticle, setSelectedArticle] = useState<DisplayNote>(() => fallbackContent.notes[0]);
+  const [selectedProjectName, setSelectedProjectName] = useState(() => fallbackContent.projects[0]?.name ?? '');
   const [emailCopied, setEmailCopied] = useState(false);
   const [siteLike, setSiteLike] = useState<LikeState>(() => readLikeState(SITE_LIKE_STORAGE_KEY, SITE_LIKE_BASE_COUNT));
   const [articleLikes, setArticleLikes] = useState<Record<string, LikeState>>({});
@@ -1745,6 +2426,46 @@ function App() {
     return () => window.clearInterval(timer);
   }, []);
 
+  useEffect(() => {
+    recordPageView(likeClientId, `${window.location.pathname}${window.location.hash}`, document.referrer || undefined)
+      .catch(() => undefined);
+  }, [likeClientId, renderedPage, selectedArticle.slug, selectedProjectName]);
+
+  useEffect(() => {
+    const controller = new AbortController();
+
+    fetchSiteLikeStatus(likeClientId, controller.signal)
+      .then((status) => {
+        const next = { count: status.count, liked: status.liked };
+        setSiteLike(next);
+        writeLikeState(SITE_LIKE_STORAGE_KEY, next);
+      })
+      .catch(() => undefined);
+
+    return () => controller.abort();
+  }, [likeClientId]);
+
+  useEffect(() => {
+    if (renderedPage !== 'article') {
+      return undefined;
+    }
+
+    const controller = new AbortController();
+
+    fetchArticleLikeStatus(selectedArticle.slug, likeClientId, controller.signal)
+      .then((status) => {
+        const next = { count: status.count, liked: status.liked };
+        setArticleLikes((current) => ({
+          ...current,
+          [selectedArticle.slug]: next,
+        }));
+        writeLikeState(getArticleLikeStorageKey(selectedArticle.slug), next);
+      })
+      .catch(() => undefined);
+
+    return () => controller.abort();
+  }, [likeClientId, renderedPage, selectedArticle.slug]);
+
   useEffect(() => (
     () => {
       if (emailCopyTimer.current) {
@@ -1762,10 +2483,32 @@ function App() {
     setPage(nextPage);
   };
 
-  const handleOpenArticle = (note: NoteMetadata) => {
+  const handleOpenArticle = (note: DisplayNote) => {
     setSelectedArticle(note);
     setHashPage('article');
     handleNavigate('article');
+
+    const controller = new AbortController();
+
+    Promise.allSettled([
+      fetchArticleDetail(note.slug, controller.signal),
+      fetchArticleLikeStatus(note.slug, likeClientId, controller.signal),
+    ])
+      .then(([articleResult, likeResult]) => {
+        if (articleResult.status === 'fulfilled' && articleResult.value) {
+          setSelectedArticle(apiArticleToNote(articleResult.value));
+        }
+
+        if (likeResult.status === 'fulfilled') {
+          const next = { count: likeResult.value.count, liked: likeResult.value.liked };
+          setArticleLikes((current) => ({
+            ...current,
+            [note.slug]: next,
+          }));
+          writeLikeState(getArticleLikeStorageKey(note.slug), next);
+        }
+      })
+      .catch(() => undefined);
   };
 
   const handleOpenProject = (project: ProjectCard) => {
@@ -1774,8 +2517,20 @@ function App() {
     handleNavigate('project');
   };
 
+  const handleOutboundClick = (
+    targetType: 'share' | 'project' | 'social' | 'external',
+    targetId: string | undefined,
+    targetUrl: string,
+  ) => {
+    recordOutboundClick(likeClientId, {
+      target_type: targetType,
+      target_id: targetId,
+      target_url: targetUrl,
+    }).catch(() => undefined);
+  };
+
   const handleCopyEmail = () => {
-    copyTextToClipboard(portfolioConfig.contact.email)
+    copyTextToClipboard(content.site.email)
       .then(() => {
         setEmailCopied(true);
 
@@ -1793,51 +2548,74 @@ function App() {
   };
 
   const handleToggleSiteLike = () => {
-    setSiteLike((current) => {
-      const next = toggleLike(current);
-      writeLikeState(SITE_LIKE_STORAGE_KEY, next);
-      return next;
-    });
+    const next = toggleLike(siteLike);
+    setSiteLike(next);
+    writeLikeState(SITE_LIKE_STORAGE_KEY, next);
+
+    setSiteLikeStatus(likeClientId, next.liked)
+      .then((status) => {
+        const serverState = { count: status.count, liked: status.liked };
+        setSiteLike(serverState);
+        writeLikeState(SITE_LIKE_STORAGE_KEY, serverState);
+      })
+      .catch(() => undefined);
   };
 
-  const handleToggleArticleLike = (note: NoteMetadata) => {
+  const handleToggleArticleLike = (note: DisplayNote) => {
     const storageKey = getArticleLikeStorageKey(note.slug);
+    const current = articleLikes[note.slug]
+      ?? readLikeState(storageKey, note.likeCount ?? ARTICLE_LIKE_BASE_COUNT);
+    const next = toggleLike(current);
 
-    setArticleLikes((currentLikes) => {
-      const current = currentLikes[note.slug] ?? readLikeState(storageKey, ARTICLE_LIKE_BASE_COUNT);
-      const next = toggleLike(current);
-      writeLikeState(storageKey, next);
+    setArticleLikes((currentLikes) => ({
+      ...currentLikes,
+      [note.slug]: next,
+    }));
+    writeLikeState(storageKey, next);
 
-      return {
-        ...currentLikes,
-        [note.slug]: next,
-      };
-    });
+    setArticleLikeStatus(note.slug, likeClientId, next.liked)
+      .then((status) => {
+        const serverState = { count: status.count, liked: status.liked };
+        setArticleLikes((currentLikes) => ({
+          ...currentLikes,
+          [note.slug]: serverState,
+        }));
+        writeLikeState(storageKey, serverState);
+      })
+      .catch(() => undefined);
   };
 
-  const selectedProject = projectCards.find((project) => project.name === selectedProjectName) ?? projectCards[0];
+  const selectedProject = content.projects.find((project) => project.name === selectedProjectName)
+    ?? content.projects[0]
+    ?? fallbackContent.projects[0];
   const selectedArticleLike = articleLikes[selectedArticle.slug]
-    ?? readLikeState(getArticleLikeStorageKey(selectedArticle.slug), ARTICLE_LIKE_BASE_COUNT);
+    ?? readLikeState(getArticleLikeStorageKey(selectedArticle.slug), selectedArticle.likeCount ?? ARTICLE_LIKE_BASE_COUNT);
 
   const pageContent = {
     home: (
       <HomePage
         now={now}
+        notes={content.notes}
+        projects={content.projects}
+        resources={content.resources}
+        site={content.site}
+        socialItems={socialItems}
         onNavigate={handleNavigate}
         onOpenArticle={handleOpenArticle}
         onOpenProject={handleOpenProject}
+        onOutboundClick={handleOutboundClick}
         onCopyEmail={handleCopyEmail}
         emailCopied={emailCopied}
         siteLike={siteLike}
         onToggleSiteLike={handleToggleSiteLike}
       />
     ),
-    blog: <BlogPage onOpenArticle={handleOpenArticle} />,
-    projects: <ProjectsPage onOpenProject={handleOpenProject} />,
-    project: <ProjectDetailPage project={selectedProject} onNavigate={handleNavigate} />,
-    about: <AboutPage onCopyEmail={handleCopyEmail} emailCopied={emailCopied} />,
-    share: <SharePage />,
-    bloggers: <BloggersPage />,
+    blog: <BlogPage notes={content.notes} archiveGroups={content.archiveGroups} resources={content.resources} onOpenArticle={handleOpenArticle} onOutboundClick={handleOutboundClick} />,
+    projects: <ProjectsPage projects={content.projects} onOpenProject={handleOpenProject} onOutboundClick={handleOutboundClick} />,
+    project: <ProjectDetailPage project={selectedProject} onNavigate={handleNavigate} onOutboundClick={handleOutboundClick} />,
+    about: <AboutPage site={content.site} onCopyEmail={handleCopyEmail} emailCopied={emailCopied} onOutboundClick={handleOutboundClick} />,
+    share: <SharePage resources={content.resources} onOutboundClick={handleOutboundClick} />,
+    bloggers: <BloggersPage friendLinks={content.friendLinks} />,
     article: <ArticlePage note={selectedArticle} like={selectedArticleLike} onToggleLike={handleToggleArticleLike} />,
     avatar: <AvatarPage />,
   }[renderedPage];
@@ -1855,11 +2633,22 @@ function App() {
         </>
       )}
       {renderedPage !== 'home' && <PageNav current={page} onNavigate={handleNavigate} />}
+      <DataStatePill content={content} />
       <div className={`page-transition page-transition-${transitionPhase}`} key={renderedPage}>
         {pageContent}
       </div>
     </main>
   );
+}
+
+function App() {
+  const isAdminRoute = window.location.pathname.replace(/\/+$/, '') === '/admin';
+
+  if (isAdminRoute) {
+    return <AdminApp />;
+  }
+
+  return <PublicApp />;
 }
 
 export default App;

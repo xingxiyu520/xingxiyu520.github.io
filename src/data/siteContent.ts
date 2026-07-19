@@ -73,6 +73,7 @@ export const homeMenuItems = [
   { page: 'projects', label: '我的项目', icon: 'folder' },
   { page: 'about', label: '关于我', icon: 'user' },
   { page: 'share', label: '推荐分享', icon: 'spark' },
+  { page: 'bloggers', label: '友链', icon: 'heart' },
   { page: 'about', label: '联系我', icon: 'mail' },
 ] as const;
 
