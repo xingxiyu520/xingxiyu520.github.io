@@ -30,6 +30,7 @@ class Article(IdMixin, TimestampMixin, Base):
     category_id: Mapped[str] = mapped_column(ForeignKey("categories.id"), nullable=False, index=True)
     status: Mapped[str] = mapped_column(String(20), default="draft", nullable=False, index=True)
     view_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    like_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     is_pinned: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     sort_order: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

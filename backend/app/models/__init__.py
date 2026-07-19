@@ -3,6 +3,7 @@ from app.models.article import Article, article_tags
 from app.models.article_view import ArticleView
 from app.models.comment import Comment
 from app.models.friend_link import FriendLink
+from app.models.like import Like
 from app.models.project import Project
 from app.models.share import Share, share_tags
 from app.models.site_config import SiteConfig
@@ -16,6 +17,7 @@ __all__ = [
     "Category",
     "Comment",
     "FriendLink",
+    "Like",
     "Project",
     "Share",
     "SiteConfig",

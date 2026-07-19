@@ -2,9 +2,13 @@ import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, 
 import { createPortal } from 'react-dom';
 import './App.css';
 import {
+  fetchArticleLikeStatus,
   fetchArticleDetail,
   fetchPublicContent,
+  fetchSiteLikeStatus,
   searchPublicContent,
+  setArticleLikeStatus,
+  setSiteLikeStatus,
   type ApiArticle,
   type ApiFriendLink,
   type ApiProject,
@@ -313,6 +317,7 @@ type DisplayNote = NoteMetadata & {
   contentMarkdown?: string | null;
   coverUrl?: string | null;
   viewCount?: number;
+  likeCount?: number;
 };
 
 const fallbackProjects: ProjectCard[] = portfolioConfig.projects.map((project, index) => ({
@@ -430,6 +435,7 @@ function apiArticleToNote(article: ApiArticle): DisplayNote {
     contentMarkdown: article.content_markdown ?? null,
     coverUrl: article.cover_url,
     viewCount: article.view_count,
+    likeCount: article.like_count,
   };
 }
 
@@ -617,11 +623,35 @@ type LikeState = {
 
 const SITE_LIKE_STORAGE_KEY = 'xiyu-feather:site-like';
 const ARTICLE_LIKE_STORAGE_PREFIX = 'xiyu-feather:article-like:';
+const LIKE_CLIENT_ID_STORAGE_KEY = 'xiyu-feather:like-client-id';
 const SITE_LIKE_BASE_COUNT = 12508;
 const ARTICLE_LIKE_BASE_COUNT = 128;
 
 function getArticleLikeStorageKey(slug: string) {
   return `${ARTICLE_LIKE_STORAGE_PREFIX}${encodeURIComponent(slug)}`;
+}
+
+function createLikeClientId() {
+  if (crypto.randomUUID) {
+    return crypto.randomUUID();
+  }
+
+  return `client-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 12)}`;
+}
+
+function getLikeClientId() {
+  try {
+    const stored = window.localStorage.getItem(LIKE_CLIENT_ID_STORAGE_KEY);
+    if (stored) {
+      return stored;
+    }
+
+    const next = createLikeClientId();
+    window.localStorage.setItem(LIKE_CLIENT_ID_STORAGE_KEY, next);
+    return next;
+  } catch {
+    return createLikeClientId();
+  }
 }
 
 function readLikeState(storageKey: string, baseCount: number): LikeState {
@@ -2255,6 +2285,7 @@ function AvatarPage() {
 function PublicApp() {
   const content = useFrontendContent();
   const socialItems = useMemo(() => createSocials(content.site.github), [content.site.github]);
+  const likeClientId = useMemo(() => getLikeClientId(), []);
   const [page, setPage] = useState<PageKey>(() => pageFromHash());
   const [renderedPage, setRenderedPage] = useState<PageKey>(() => pageFromHash());
   const [transitionPhase, setTransitionPhase] = useState<'idle' | 'exit' | 'enter'>('idle');
@@ -2307,6 +2338,41 @@ function PublicApp() {
     return () => window.clearInterval(timer);
   }, []);
 
+  useEffect(() => {
+    const controller = new AbortController();
+
+    fetchSiteLikeStatus(likeClientId, controller.signal)
+      .then((status) => {
+        const next = { count: status.count, liked: status.liked };
+        setSiteLike(next);
+        writeLikeState(SITE_LIKE_STORAGE_KEY, next);
+      })
+      .catch(() => undefined);
+
+    return () => controller.abort();
+  }, [likeClientId]);
+
+  useEffect(() => {
+    if (renderedPage !== 'article') {
+      return undefined;
+    }
+
+    const controller = new AbortController();
+
+    fetchArticleLikeStatus(selectedArticle.slug, likeClientId, controller.signal)
+      .then((status) => {
+        const next = { count: status.count, liked: status.liked };
+        setArticleLikes((current) => ({
+          ...current,
+          [selectedArticle.slug]: next,
+        }));
+        writeLikeState(getArticleLikeStorageKey(selectedArticle.slug), next);
+      })
+      .catch(() => undefined);
+
+    return () => controller.abort();
+  }, [likeClientId, renderedPage, selectedArticle.slug]);
+
   useEffect(() => (
     () => {
       if (emailCopyTimer.current) {
@@ -2330,10 +2396,23 @@ function PublicApp() {
     handleNavigate('article');
 
     const controller = new AbortController();
-    fetchArticleDetail(note.slug, controller.signal)
-      .then((article) => {
-        if (article) {
-          setSelectedArticle(apiArticleToNote(article));
+
+    Promise.allSettled([
+      fetchArticleDetail(note.slug, controller.signal),
+      fetchArticleLikeStatus(note.slug, likeClientId, controller.signal),
+    ])
+      .then(([articleResult, likeResult]) => {
+        if (articleResult.status === 'fulfilled' && articleResult.value) {
+          setSelectedArticle(apiArticleToNote(articleResult.value));
+        }
+
+        if (likeResult.status === 'fulfilled') {
+          const next = { count: likeResult.value.count, liked: likeResult.value.liked };
+          setArticleLikes((current) => ({
+            ...current,
+            [note.slug]: next,
+          }));
+          writeLikeState(getArticleLikeStorageKey(note.slug), next);
         }
       })
       .catch(() => undefined);
@@ -2364,33 +2443,48 @@ function PublicApp() {
   };
 
   const handleToggleSiteLike = () => {
-    setSiteLike((current) => {
-      const next = toggleLike(current);
-      writeLikeState(SITE_LIKE_STORAGE_KEY, next);
-      return next;
-    });
+    const next = toggleLike(siteLike);
+    setSiteLike(next);
+    writeLikeState(SITE_LIKE_STORAGE_KEY, next);
+
+    setSiteLikeStatus(likeClientId, next.liked)
+      .then((status) => {
+        const serverState = { count: status.count, liked: status.liked };
+        setSiteLike(serverState);
+        writeLikeState(SITE_LIKE_STORAGE_KEY, serverState);
+      })
+      .catch(() => undefined);
   };
 
   const handleToggleArticleLike = (note: DisplayNote) => {
     const storageKey = getArticleLikeStorageKey(note.slug);
+    const current = articleLikes[note.slug]
+      ?? readLikeState(storageKey, note.likeCount ?? ARTICLE_LIKE_BASE_COUNT);
+    const next = toggleLike(current);
 
-    setArticleLikes((currentLikes) => {
-      const current = currentLikes[note.slug] ?? readLikeState(storageKey, ARTICLE_LIKE_BASE_COUNT);
-      const next = toggleLike(current);
-      writeLikeState(storageKey, next);
+    setArticleLikes((currentLikes) => ({
+      ...currentLikes,
+      [note.slug]: next,
+    }));
+    writeLikeState(storageKey, next);
 
-      return {
-        ...currentLikes,
-        [note.slug]: next,
-      };
-    });
+    setArticleLikeStatus(note.slug, likeClientId, next.liked)
+      .then((status) => {
+        const serverState = { count: status.count, liked: status.liked };
+        setArticleLikes((currentLikes) => ({
+          ...currentLikes,
+          [note.slug]: serverState,
+        }));
+        writeLikeState(storageKey, serverState);
+      })
+      .catch(() => undefined);
   };
 
   const selectedProject = content.projects.find((project) => project.name === selectedProjectName)
     ?? content.projects[0]
     ?? fallbackContent.projects[0];
   const selectedArticleLike = articleLikes[selectedArticle.slug]
-    ?? readLikeState(getArticleLikeStorageKey(selectedArticle.slug), ARTICLE_LIKE_BASE_COUNT);
+    ?? readLikeState(getArticleLikeStorageKey(selectedArticle.slug), selectedArticle.likeCount ?? ARTICLE_LIKE_BASE_COUNT);
 
   const pageContent = {
     home: (

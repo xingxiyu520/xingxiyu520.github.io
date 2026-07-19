@@ -1,3 +1,5 @@
+import { apiRequest } from './client';
+
 export type ApiCategory = {
   id: string;
   name: string;
@@ -22,6 +24,7 @@ export type ApiArticle = {
   tags: ApiTag[];
   status: string;
   view_count: number;
+  like_count: number;
   is_pinned: boolean;
   sort_order: number;
   published_at: string | null;
@@ -101,6 +104,19 @@ export type PublicSearchResponse = {
   shares: ApiShare[];
 };
 
+export type ApiLikeStatus = {
+  target_type: 'site' | 'article';
+  target_id: string;
+  count: number;
+  liked: boolean;
+};
+
+function likeHeaders(clientId: string): HeadersInit {
+  return {
+    'X-Like-Client-Id': clientId,
+  };
+}
+
 export async function fetchPublicContent(signal?: AbortSignal): Promise<PublicContentResponse> {
   const [articles, projects, shares, friendLinks, siteConfig] = await Promise.allSettled([
     apiRequest<ApiArticle[]>('/articles', { signal }),
@@ -134,6 +150,34 @@ export async function fetchArticleDetail(slug: string, signal?: AbortSignal): Pr
   }
 }
 
+export function fetchSiteLikeStatus(clientId: string, signal?: AbortSignal): Promise<ApiLikeStatus> {
+  return apiRequest<ApiLikeStatus>('/site/like', {
+    signal,
+    headers: likeHeaders(clientId),
+  });
+}
+
+export function setSiteLikeStatus(clientId: string, liked: boolean): Promise<ApiLikeStatus> {
+  return apiRequest<ApiLikeStatus>('/site/like', {
+    method: liked ? 'POST' : 'DELETE',
+    headers: likeHeaders(clientId),
+  });
+}
+
+export function fetchArticleLikeStatus(slug: string, clientId: string, signal?: AbortSignal): Promise<ApiLikeStatus> {
+  return apiRequest<ApiLikeStatus>(`/articles/${encodeURIComponent(slug)}/like`, {
+    signal,
+    headers: likeHeaders(clientId),
+  });
+}
+
+export function setArticleLikeStatus(slug: string, clientId: string, liked: boolean): Promise<ApiLikeStatus> {
+  return apiRequest<ApiLikeStatus>(`/articles/${encodeURIComponent(slug)}/like`, {
+    method: liked ? 'POST' : 'DELETE',
+    headers: likeHeaders(clientId),
+  });
+}
+
 export async function searchPublicContent(query: string, signal?: AbortSignal): Promise<PublicSearchResponse | null> {
   try {
     return await apiRequest<PublicSearchResponse>(`/search?q=${encodeURIComponent(query)}`, { signal });
@@ -141,4 +185,3 @@ export async function searchPublicContent(query: string, signal?: AbortSignal): 
     return null;
   }
 }
-import { apiRequest } from './client';

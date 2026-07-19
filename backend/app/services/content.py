@@ -10,6 +10,7 @@ from app.core.config import get_settings
 from app.models.article import Article
 from app.models.article_view import ArticleView
 from app.models.friend_link import FriendLink
+from app.models.like import Like
 from app.models.project import Project
 from app.models.share import Share
 from app.models.site_config import SiteConfig
@@ -18,6 +19,7 @@ from app.schemas.content import (
     ArticleOut,
     CategoryOut,
     FriendLinkOut,
+    LikeOut,
     ProjectOut,
     ShareOut,
     TagOut,
@@ -117,6 +119,7 @@ def article_to_out(article: Article, include_content: bool) -> ArticleOut:
         tags=[TagOut.model_validate(tag) for tag in article.tags],
         status=article.status,
         view_count=article.view_count,
+        like_count=article.like_count,
         is_pinned=article.is_pinned,
         sort_order=article.sort_order,
         published_at=article.published_at,
@@ -192,6 +195,70 @@ def record_article_view(db: Session, article: Article, client_ip: str) -> bool:
     db.add(article)
     db.commit()
     db.refresh(article)
+    return True
+
+
+def client_like_hash(client_key: str) -> str:
+    settings = get_settings()
+    normalized = client_key.strip()[:240] or "unknown"
+    return sha256(f"{settings.jwt_secret}:like:{normalized}".encode("utf-8")).hexdigest()
+
+
+def get_like_count(db: Session, target_type: str, target_id: str) -> int:
+    return int(
+        db.scalar(
+            select(func.count())
+            .select_from(Like)
+            .where(Like.target_type == target_type, Like.target_id == target_id)
+        )
+        or 0
+    )
+
+
+def read_like_status(
+    db: Session,
+    target_type: str,
+    target_id: str,
+    client_hash: str,
+    count: int | None = None,
+) -> LikeOut:
+    existing_like = db.scalar(
+        select(Like).where(
+            Like.target_type == target_type,
+            Like.target_id == target_id,
+            Like.client_hash == client_hash,
+        )
+    )
+
+    return LikeOut(
+        target_type=target_type,
+        target_id=target_id,
+        count=get_like_count(db, target_type, target_id) if count is None else count,
+        liked=existing_like is not None,
+    )
+
+
+def set_like_state(db: Session, target_type: str, target_id: str, client_hash: str, liked: bool) -> bool:
+    existing_like = db.scalar(
+        select(Like).where(
+            Like.target_type == target_type,
+            Like.target_id == target_id,
+            Like.client_hash == client_hash,
+        )
+    )
+
+    if liked:
+        if existing_like is not None:
+            return False
+        db.add(Like(target_type=target_type, target_id=target_id, client_hash=client_hash))
+        db.flush()
+        return True
+
+    if existing_like is None:
+        return False
+
+    db.delete(existing_like)
+    db.flush()
     return True
 
 

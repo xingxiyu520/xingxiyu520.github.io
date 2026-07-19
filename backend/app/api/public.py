@@ -1,6 +1,6 @@
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
@@ -10,13 +10,16 @@ from app.models.friend_link import FriendLink
 from app.models.project import Project
 from app.models.share import Share
 from app.models.taxonomy import Category, Tag
-from app.schemas.content import ArticleOut, FriendLinkOut, ProjectOut, ShareOut
+from app.schemas.content import ArticleOut, FriendLinkOut, LikeOut, ProjectOut, ShareOut
 from app.schemas.site import SiteConfigOut
 from app.services.content import (
     article_detail_options,
     article_to_out,
+    client_like_hash,
     get_site_config_map,
+    read_like_status,
     record_article_view,
+    set_like_state,
     share_to_out,
     visible_articles_statement,
     visible_shares_statement,
@@ -24,6 +27,26 @@ from app.services.content import (
 from app.utils.request import get_client_ip
 
 router = APIRouter(tags=["public"])
+
+SITE_LIKE_TARGET_ID = "site"
+
+
+def get_public_article_or_404(db: Session, slug: str) -> Article:
+    article = db.scalar(
+        select(Article)
+        .options(*article_detail_options())
+        .where(Article.slug == slug, Article.status == "published")
+    )
+    if article is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="文章不存在")
+    return article
+
+
+def get_request_like_hash(request: Request) -> str:
+    client_id = request.headers.get("x-like-client-id")
+    if client_id and client_id.strip():
+        return client_like_hash(f"client:{client_id}")
+    return client_like_hash(f"ip:{get_client_ip(request)}")
 
 
 @router.get("/articles", response_model=list[ArticleOut])
@@ -51,19 +74,86 @@ def read_article(
     request: Request,
     db: Annotated[Session, Depends(get_db)],
 ) -> ArticleOut:
-    article = db.scalar(
-        select(Article)
-        .options(*article_detail_options())
-        .where(Article.slug == slug, Article.status == "published")
-    )
-    if article is None:
-        from fastapi import HTTPException, status
-
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="文章不存在")
-
+    article = get_public_article_or_404(db, slug)
     record_article_view(db, article, get_client_ip(request))
     db.refresh(article)
     return article_to_out(article, include_content=True)
+
+
+@router.get("/site/like", response_model=LikeOut)
+def read_site_like(
+    request: Request,
+    db: Annotated[Session, Depends(get_db)],
+) -> LikeOut:
+    return read_like_status(db, "site", SITE_LIKE_TARGET_ID, get_request_like_hash(request))
+
+
+@router.post("/site/like", response_model=LikeOut)
+def like_site(
+    request: Request,
+    db: Annotated[Session, Depends(get_db)],
+) -> LikeOut:
+    client_hash = get_request_like_hash(request)
+    changed = set_like_state(db, "site", SITE_LIKE_TARGET_ID, client_hash, liked=True)
+    if changed:
+        db.commit()
+    return read_like_status(db, "site", SITE_LIKE_TARGET_ID, client_hash)
+
+
+@router.delete("/site/like", response_model=LikeOut)
+def unlike_site(
+    request: Request,
+    db: Annotated[Session, Depends(get_db)],
+) -> LikeOut:
+    client_hash = get_request_like_hash(request)
+    changed = set_like_state(db, "site", SITE_LIKE_TARGET_ID, client_hash, liked=False)
+    if changed:
+        db.commit()
+    return read_like_status(db, "site", SITE_LIKE_TARGET_ID, client_hash)
+
+
+@router.get("/articles/{slug}/like", response_model=LikeOut)
+def read_article_like(
+    slug: str,
+    request: Request,
+    db: Annotated[Session, Depends(get_db)],
+) -> LikeOut:
+    article = get_public_article_or_404(db, slug)
+    return read_like_status(db, "article", article.id, get_request_like_hash(request), count=article.like_count)
+
+
+@router.post("/articles/{slug}/like", response_model=LikeOut)
+def like_article(
+    slug: str,
+    request: Request,
+    db: Annotated[Session, Depends(get_db)],
+) -> LikeOut:
+    article = get_public_article_or_404(db, slug)
+    client_hash = get_request_like_hash(request)
+    changed = set_like_state(db, "article", article.id, client_hash, liked=True)
+    if changed:
+        article.like_count += 1
+        db.add(article)
+        db.commit()
+        db.refresh(article)
+    return read_like_status(db, "article", article.id, client_hash, count=article.like_count)
+
+
+@router.delete("/articles/{slug}/like", response_model=LikeOut)
+def unlike_article(
+    slug: str,
+    request: Request,
+    db: Annotated[Session, Depends(get_db)],
+) -> LikeOut:
+    article = get_public_article_or_404(db, slug)
+    client_hash = get_request_like_hash(request)
+    changed = set_like_state(db, "article", article.id, client_hash, liked=False)
+    if changed:
+        article.like_count = max(0, article.like_count - 1)
+        db.add(article)
+        db.commit()
+        db.refresh(article)
+    return read_like_status(db, "article", article.id, client_hash, count=article.like_count)
 
 
 @router.get("/projects", response_model=list[ProjectOut])

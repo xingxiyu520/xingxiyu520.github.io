@@ -82,12 +82,20 @@ class ArticleOut(BaseModel):
     tags: list[TagOut]
     status: str
     view_count: int
+    like_count: int
     is_pinned: bool
     sort_order: int
     published_at: datetime | None
     archived_at: datetime | None
     created_at: datetime
     updated_at: datetime
+
+
+class LikeOut(BaseModel):
+    target_type: Literal["site", "article"]
+    target_id: str
+    count: int
+    liked: bool
 
 
 class ProjectCreate(BaseModel):
