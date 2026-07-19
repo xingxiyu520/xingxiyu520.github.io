@@ -1,5 +1,5 @@
 import { apiRequest } from './client';
-import type { ApiArticle, ApiFriendLink, ApiProject, ApiShare } from './content';
+import type { ApiArticle, ApiCategory, ApiFriendLink, ApiProject, ApiShare, ApiTag } from './content';
 
 export type ContentStatus = 'draft' | 'published' | 'offline' | 'archived';
 
@@ -37,11 +37,18 @@ export type ProjectPayload = {
   name: string;
   slug?: string;
   description?: string;
+  content_markdown?: string;
   cover_url?: string;
   tech_stack: string[];
   github_url?: string;
   demo_url?: string;
   status: ContentStatus;
+  sort_order?: number;
+};
+
+export type TaxonomyPayload = {
+  name: string;
+  type: 'article' | 'share' | 'project';
   sort_order?: number;
 };
 
@@ -76,8 +83,27 @@ export type UploadedFile = {
   size_bytes: number;
   owner_type: string | null;
   owner_id: string | null;
+  is_used: boolean;
   created_at: string;
   updated_at: string;
+};
+
+export type AnalyticsData = {
+  total_page_views: number;
+  unique_visitors: number;
+  article_like_count: number;
+  site_like_count: number;
+  outbound_click_count: number;
+  daily: Array<{
+    date: string;
+    page_views: number;
+    unique_visitors: number;
+    outbound_clicks: number;
+  }>;
+  top_articles: Array<{ id: string; title: string; slug: string; views: number; likes: number }>;
+  top_shares: Array<{ id: string; title: string; clicks: number }>;
+  top_projects: Array<{ id: string; title: string; clicks: number }>;
+  top_referrers: Array<{ referrer: string; count: number }>;
 };
 
 export type SiteConfigResponse = {
@@ -86,6 +112,26 @@ export type SiteConfigResponse = {
 
 export function getDashboard() {
   return apiRequest<DashboardData>('/admin/dashboard', { auth: true });
+}
+
+export function getAdminAnalytics(days = 30) {
+  return apiRequest<AnalyticsData>(`/admin/analytics?days=${days}`, { auth: true });
+}
+
+export function listCategories(type?: TaxonomyPayload['type']) {
+  return apiRequest<ApiCategory[]>(`/admin/categories${type ? `?type=${encodeURIComponent(type)}` : ''}`, { auth: true });
+}
+
+export function createCategory(payload: TaxonomyPayload) {
+  return apiRequest<ApiCategory>('/admin/categories', { method: 'POST', auth: true, body: payload });
+}
+
+export function listTags(type?: TaxonomyPayload['type']) {
+  return apiRequest<ApiTag[]>(`/admin/tags${type ? `?type=${encodeURIComponent(type)}` : ''}`, { auth: true });
+}
+
+export function createTag(payload: Omit<TaxonomyPayload, 'sort_order'>) {
+  return apiRequest<ApiTag>('/admin/tags', { method: 'POST', auth: true, body: payload });
 }
 
 export function listAdminArticles() {
@@ -174,6 +220,18 @@ export function updateSiteConfig(configs: Record<string, unknown>) {
   });
 }
 
+export function listUploads(params: { ownerType?: string; q?: string } = {}) {
+  const query = new URLSearchParams();
+  if (params.ownerType) query.set('owner_type', params.ownerType);
+  if (params.q) query.set('q', params.q);
+  const suffix = query.toString() ? `?${query}` : '';
+  return apiRequest<UploadedFile[]>(`/admin/uploads${suffix}`, { auth: true });
+}
+
+export function deleteUpload(id: string) {
+  return apiRequest<{ status: string }>(`/admin/uploads/${id}?confirm=true`, { method: 'DELETE', auth: true });
+}
+
 export function uploadAdminImage(file: File, ownerType?: string, ownerId?: string, articleSlug?: string) {
   const formData = new FormData();
   formData.append('file', file);
@@ -182,3 +240,5 @@ export function uploadAdminImage(file: File, ownerType?: string, ownerId?: strin
   if (articleSlug) formData.append('article_slug', articleSlug);
   return apiRequest<UploadedFile>('/admin/upload', { method: 'POST', auth: true, body: formData });
 }
+
+export const uploadAdminFile = uploadAdminImage;

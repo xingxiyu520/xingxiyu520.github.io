@@ -38,6 +38,7 @@ export type ApiProject = {
   name: string;
   slug: string;
   description: string | null;
+  content_markdown: string;
   cover_url: string | null;
   tech_stack: string[];
   github_url: string | null;
@@ -117,6 +118,12 @@ function likeHeaders(clientId: string): HeadersInit {
   };
 }
 
+function analyticsHeaders(clientId: string): HeadersInit {
+  return {
+    'X-Analytics-Client-Id': clientId,
+  };
+}
+
 export async function fetchPublicContent(signal?: AbortSignal): Promise<PublicContentResponse> {
   const [articles, projects, shares, friendLinks, siteConfig] = await Promise.allSettled([
     apiRequest<ApiArticle[]>('/articles', { signal }),
@@ -175,6 +182,35 @@ export function setArticleLikeStatus(slug: string, clientId: string, liked: bool
   return apiRequest<ApiLikeStatus>(`/articles/${encodeURIComponent(slug)}/like`, {
     method: liked ? 'POST' : 'DELETE',
     headers: likeHeaders(clientId),
+  });
+}
+
+export function recordPageView(clientId: string, path: string, referrer?: string) {
+  return apiRequest<{ status: string }>('/analytics/page-view', {
+    method: 'POST',
+    headers: analyticsHeaders(clientId),
+    body: { path, referrer },
+  });
+}
+
+export function recordOutboundClick(
+  clientId: string,
+  payload: {
+    target_type: 'share' | 'project' | 'social' | 'external';
+    target_id?: string;
+    target_url?: string;
+    path?: string;
+    referrer?: string;
+  },
+) {
+  return apiRequest<{ status: string }>('/analytics/outbound-click', {
+    method: 'POST',
+    headers: analyticsHeaders(clientId),
+    body: {
+      path: window.location.pathname + window.location.hash,
+      referrer: document.referrer || undefined,
+      ...payload,
+    },
   });
 }
 

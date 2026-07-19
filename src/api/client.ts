@@ -69,6 +69,7 @@ export async function apiRequest<T>(path: string, options: ApiRequestOptions = {
     method: options.method ?? (options.body !== undefined ? 'POST' : 'GET'),
     headers,
     body,
+    credentials: 'include',
     signal: options.signal,
   });
 

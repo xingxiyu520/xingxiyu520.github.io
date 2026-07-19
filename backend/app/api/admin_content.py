@@ -12,8 +12,11 @@ from app.models.article import Article
 from app.models.friend_link import FriendLink
 from app.models.project import Project
 from app.models.share import Share
+from app.models.site_config import SiteConfig
 from app.models.taxonomy import Category, Tag
+from app.models.uploaded_file import UploadedFile
 from app.schemas.content import (
+    AnalyticsOut,
     ArticleCreate,
     ArticleOut,
     ArticleUpdate,
@@ -39,6 +42,7 @@ from app.services.content import (
     PUBLISHABLE_MODELS,
     article_detail_options,
     article_to_out,
+    build_analytics_summary,
     build_text_search_filter,
     count_model,
     ensure_unique_slug,
@@ -50,7 +54,7 @@ from app.services.content import (
     share_to_out,
     upsert_site_config,
 )
-from app.services.upload import save_uploaded_image
+from app.services.upload import delete_uploaded_file, save_uploaded_file
 from app.utils.markdown import title_from_markdown
 
 router = APIRouter(prefix="/admin", tags=["admin-content"])
@@ -60,6 +64,50 @@ def apply_simple_updates(item: Any, updates: dict[str, Any], fields: set[str]) -
     for field in fields:
         if field in updates:
             setattr(item, field, updates[field])
+
+
+def value_contains_url(value: Any, url: str) -> bool:
+    if isinstance(value, str):
+        return url in value
+    if isinstance(value, dict):
+        return any(value_contains_url(item, url) for item in value.values())
+    if isinstance(value, list):
+        return any(value_contains_url(item, url) for item in value)
+    return False
+
+
+def is_upload_referenced(db: Session, uploaded_file: UploadedFile) -> bool:
+    url = uploaded_file.url
+    text_pattern = f"%{url}%"
+
+    if db.scalar(
+        select(func.count())
+        .select_from(Article)
+        .where((Article.cover_url == url) | Article.content_markdown.ilike(text_pattern))
+    ):
+        return True
+
+    if db.scalar(
+        select(func.count())
+        .select_from(Project)
+        .where((Project.cover_url == url) | Project.content_markdown.ilike(text_pattern))
+    ):
+        return True
+
+    if db.scalar(select(func.count()).select_from(Share).where(Share.cover_url == url)):
+        return True
+
+    if db.scalar(select(func.count()).select_from(FriendLink).where(FriendLink.avatar_url == url)):
+        return True
+
+    site_configs = db.scalars(select(SiteConfig.value_json)).all()
+    return any(value_contains_url(value, url) for value in site_configs)
+
+
+def upload_to_out(db: Session, uploaded_file: UploadedFile) -> UploadedFileOut:
+    return UploadedFileOut.model_validate(uploaded_file).model_copy(
+        update={"is_used": is_upload_referenced(db, uploaded_file)}
+    )
 
 
 @router.get("/dashboard", response_model=DashboardOut)
@@ -107,6 +155,15 @@ def dashboard(
         ),
         recent_updates=recent_items[:10],
     )
+
+
+@router.get("/analytics", response_model=AnalyticsOut)
+def analytics(
+    db: Annotated[Session, Depends(get_db)],
+    current_admin: Annotated[Admin, Depends(get_password_ready_admin)],
+    days: int = Query(default=30, ge=1, le=365),
+) -> AnalyticsOut:
+    return build_analytics_summary(db, days)
 
 
 @router.get("/categories", response_model=list[CategoryOut])
@@ -285,6 +342,7 @@ def create_project(
         name=payload.name,
         slug=ensure_unique_slug(db, Project, payload.slug, payload.name),
         description=payload.description,
+        content_markdown=payload.content_markdown,
         cover_url=payload.cover_url,
         tech_stack=payload.tech_stack,
         github_url=payload.github_url,
@@ -316,7 +374,7 @@ def update_project(
     apply_simple_updates(
         project,
         updates,
-        {"name", "description", "cover_url", "tech_stack", "github_url", "demo_url", "status", "sort_order"},
+        {"name", "description", "content_markdown", "cover_url", "tech_stack", "github_url", "demo_url", "status", "sort_order"},
     )
     mark_publish_fields(project, updates.get("status"))
     db.add(project)
@@ -472,7 +530,47 @@ async def upload_image(
     owner_id: str | None = Form(default=None),
     article_slug: str | None = Form(default=None),
 ) -> Any:
-    return await save_uploaded_image(db, file, owner_type=owner_type, owner_id=owner_id, article_slug=article_slug)
+    uploaded_file = await save_uploaded_file(db, file, owner_type=owner_type, owner_id=owner_id, article_slug=article_slug)
+    return upload_to_out(db, uploaded_file)
+
+
+@router.get("/uploads", response_model=list[UploadedFileOut])
+def list_uploads(
+    db: Annotated[Session, Depends(get_db)],
+    current_admin: Annotated[Admin, Depends(get_password_ready_admin)],
+    owner_type: str | None = Query(default=None),
+    q: str | None = Query(default=None),
+    limit: int = Query(default=80, ge=1, le=200),
+) -> list[UploadedFileOut]:
+    statement = select(UploadedFile).order_by(UploadedFile.created_at.desc()).limit(limit)
+    if owner_type:
+        statement = statement.where(UploadedFile.owner_type == owner_type)
+    if q:
+        pattern = f"%{q}%"
+        statement = statement.where(
+            UploadedFile.original_name.ilike(pattern) | UploadedFile.url.ilike(pattern)
+        )
+    return [upload_to_out(db, uploaded_file) for uploaded_file in db.scalars(statement).all()]
+
+
+@router.delete("/uploads/{file_id}")
+def delete_upload(
+    file_id: str,
+    db: Annotated[Session, Depends(get_db)],
+    current_admin: Annotated[Admin, Depends(get_password_ready_admin)],
+    confirm: bool = Query(default=False),
+) -> dict[str, str]:
+    if not confirm:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="删除文件需要 confirm=true")
+
+    uploaded_file = db.get(UploadedFile, file_id)
+    if uploaded_file is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="文件不存在")
+    if is_upload_referenced(db, uploaded_file):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="文件正在被内容引用，请先移除引用后再删除")
+
+    delete_uploaded_file(db, uploaded_file)
+    return {"status": "ok"}
 
 
 @router.post("/{resource_type}/{item_id}/archive")

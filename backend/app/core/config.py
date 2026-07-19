@@ -14,6 +14,7 @@ class Settings(BaseSettings):
     database_url: str = Field(default=f"sqlite:///{(BACKEND_DIR / 'data' / 'site.db').as_posix()}")
     jwt_secret: str = "change-me-before-production"
     jwt_expire_days: int = 7
+    admin_cookie_name: str = "xiyu_admin_token"
     initial_admin_username: str = "admin"
     initial_admin_password: str = "change-me-on-first-login"
     upload_dir: str = "./uploads"
@@ -45,6 +46,25 @@ class Settings(BaseSettings):
         raw_path = self.database_url.removeprefix(prefix)
         path = Path(raw_path)
         return path if path.is_absolute() else BACKEND_DIR / path
+
+    @property
+    def is_production(self) -> bool:
+        return self.environment.lower() == "production"
+
+    @property
+    def admin_cookie_secure(self) -> bool:
+        return self.is_production
+
+    def validate_runtime_security(self) -> None:
+        if not self.is_production:
+            return
+
+        weak_secrets = {"change-me-before-production", "replace-with-a-long-random-secret"}
+        if self.jwt_secret in weak_secrets or len(self.jwt_secret) < 32:
+            raise ValueError("Production JWT_SECRET must be a random string of at least 32 characters")
+
+        if self.initial_admin_password in {"change-me-on-first-login", "replace-before-first-run"}:
+            raise ValueError("Production INITIAL_ADMIN_PASSWORD must be changed before first run")
 
 
 @lru_cache

@@ -37,3 +37,4 @@ backend/.venv/
 backend/.env
 backend/data/
 backend/uploads/
+backups/

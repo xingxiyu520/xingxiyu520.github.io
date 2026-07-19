@@ -1,4 +1,5 @@
 from app.models.admin import Admin
+from app.models.analytics import AnalyticsEvent
 from app.models.article import Article, article_tags
 from app.models.article_view import ArticleView
 from app.models.comment import Comment
@@ -12,6 +13,7 @@ from app.models.uploaded_file import UploadedFile
 
 __all__ = [
     "Admin",
+    "AnalyticsEvent",
     "Article",
     "ArticleView",
     "Category",

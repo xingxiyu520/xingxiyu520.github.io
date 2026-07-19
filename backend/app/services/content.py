@@ -7,6 +7,7 @@ from sqlalchemy import Select, func, or_, select
 from sqlalchemy.orm import Session, selectinload
 
 from app.core.config import get_settings
+from app.models.analytics import AnalyticsEvent
 from app.models.article import Article
 from app.models.article_view import ArticleView
 from app.models.friend_link import FriendLink
@@ -16,6 +17,7 @@ from app.models.share import Share
 from app.models.site_config import SiteConfig
 from app.models.taxonomy import Category, Tag
 from app.schemas.content import (
+    AnalyticsOut,
     ArticleOut,
     CategoryOut,
     FriendLinkOut,
@@ -204,6 +206,12 @@ def client_like_hash(client_key: str) -> str:
     return sha256(f"{settings.jwt_secret}:like:{normalized}".encode("utf-8")).hexdigest()
 
 
+def request_identity_hash(prefix: str, value: str) -> str:
+    settings = get_settings()
+    normalized = value.strip()[:240] or "unknown"
+    return sha256(f"{settings.jwt_secret}:{prefix}:{normalized}".encode("utf-8")).hexdigest()
+
+
 def get_like_count(db: Session, target_type: str, target_id: str) -> int:
     return int(
         db.scalar(
@@ -260,6 +268,106 @@ def set_like_state(db: Session, target_type: str, target_id: str, client_hash: s
     db.delete(existing_like)
     db.flush()
     return True
+
+
+def record_analytics_event(
+    db: Session,
+    event_type: str,
+    client_key: str,
+    client_ip: str,
+    path: str,
+    referrer: str | None = None,
+    target_type: str | None = None,
+    target_id: str | None = None,
+    target_url: str | None = None,
+) -> AnalyticsEvent:
+    event = AnalyticsEvent(
+        event_type=event_type,
+        target_type=target_type,
+        target_id=target_id,
+        target_url=target_url,
+        path=path[:500] or "/",
+        referrer=referrer[:500] if referrer else None,
+        client_hash=request_identity_hash("analytics-client", client_key),
+        ip_hash=request_identity_hash("analytics-ip", client_ip),
+        occurred_at=now_utc(),
+    )
+    db.add(event)
+    db.commit()
+    db.refresh(event)
+    return event
+
+
+def build_analytics_summary(db: Session, days: int) -> AnalyticsOut:
+    since = now_utc() - timedelta(days=max(1, days))
+    events = db.scalars(select(AnalyticsEvent).where(AnalyticsEvent.occurred_at >= since)).all()
+    page_events = [event for event in events if event.event_type == "page_view"]
+    click_events = [event for event in events if event.event_type == "outbound_click"]
+
+    daily: dict[str, dict[str, Any]] = {}
+    for event in events:
+        key = event.occurred_at.date().isoformat()
+        bucket = daily.setdefault(key, {"date": key, "page_views": 0, "unique_clients": set(), "outbound_clicks": 0})
+        if event.event_type == "page_view":
+            bucket["page_views"] += 1
+            bucket["unique_clients"].add(event.client_hash)
+        elif event.event_type == "outbound_click":
+            bucket["outbound_clicks"] += 1
+
+    daily_rows = [
+        {
+            "date": bucket["date"],
+            "page_views": bucket["page_views"],
+            "unique_visitors": len(bucket["unique_clients"]),
+            "outbound_clicks": bucket["outbound_clicks"],
+        }
+        for bucket in sorted(daily.values(), key=lambda item: item["date"])
+    ]
+
+    share_click_counts: dict[str, int] = {}
+    project_click_counts: dict[str, int] = {}
+    referrer_counts: dict[str, int] = {}
+    for event in click_events:
+        if event.target_type == "share" and event.target_id:
+            share_click_counts[event.target_id] = share_click_counts.get(event.target_id, 0) + 1
+        elif event.target_type == "project" and event.target_id:
+            project_click_counts[event.target_id] = project_click_counts.get(event.target_id, 0) + 1
+        if event.referrer:
+            referrer_counts[event.referrer] = referrer_counts.get(event.referrer, 0) + 1
+
+    shares_by_id = {share.id: share for share in db.scalars(select(Share)).all()}
+    projects_by_id = {project.id: project for project in db.scalars(select(Project)).all()}
+    top_articles = db.scalars(
+        select(Article)
+        .where(Article.status == "published")
+        .order_by(Article.view_count.desc(), Article.like_count.desc(), Article.updated_at.desc())
+        .limit(8)
+    ).all()
+
+    return AnalyticsOut(
+        total_page_views=len(page_events),
+        unique_visitors=len({event.client_hash for event in page_events}),
+        article_like_count=int(db.scalar(select(func.coalesce(func.sum(Article.like_count), 0))) or 0),
+        site_like_count=get_like_count(db, "site", "site"),
+        outbound_click_count=len(click_events),
+        daily=daily_rows,
+        top_articles=[
+            {"id": article.id, "title": article.title, "slug": article.slug, "views": article.view_count, "likes": article.like_count}
+            for article in top_articles
+        ],
+        top_shares=[
+            {"id": share_id, "title": shares_by_id.get(share_id).title if share_id in shares_by_id else share_id, "clicks": clicks}
+            for share_id, clicks in sorted(share_click_counts.items(), key=lambda item: item[1], reverse=True)[:8]
+        ],
+        top_projects=[
+            {"id": project_id, "title": projects_by_id.get(project_id).name if project_id in projects_by_id else project_id, "clicks": clicks}
+            for project_id, clicks in sorted(project_click_counts.items(), key=lambda item: item[1], reverse=True)[:8]
+        ],
+        top_referrers=[
+            {"referrer": referrer, "count": count}
+            for referrer, count in sorted(referrer_counts.items(), key=lambda item: item[1], reverse=True)[:8]
+        ],
+    )
 
 
 def build_text_search_filter(model: type, query: str):

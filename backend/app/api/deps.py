@@ -1,6 +1,6 @@
 from typing import Annotated
 
-from fastapi import Depends, HTTPException, status
+from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import OAuth2PasswordBearer
 from jose import JWTError
 from sqlalchemy.orm import Session
@@ -11,21 +11,27 @@ from app.models.admin import Admin
 from app.services.admin_auth import get_admin_by_id
 from app.utils.security import decode_access_token
 
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/admin/login")
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/admin/login", auto_error=False)
 
 
 def get_current_admin(
-    token: Annotated[str, Depends(oauth2_scheme)],
+    request: Request,
+    token: Annotated[str | None, Depends(oauth2_scheme)],
     db: Annotated[Session, Depends(get_db)],
 ) -> Admin:
+    settings = get_settings()
+    active_token = token or request.cookies.get(settings.admin_cookie_name)
     credentials_error = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail="登录状态已失效，请重新登录",
         headers={"WWW-Authenticate": "Bearer"},
     )
 
+    if not active_token:
+        raise credentials_error
+
     try:
-        payload = decode_access_token(token, get_settings().jwt_secret)
+        payload = decode_access_token(active_token, settings.jwt_secret)
         admin_id = payload.get("sub")
         if not isinstance(admin_id, str) or not admin_id:
             raise credentials_error

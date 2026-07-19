@@ -1,7 +1,7 @@
 from datetime import timedelta
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_current_admin
@@ -25,6 +25,7 @@ router = APIRouter(prefix="/admin", tags=["admin-auth"])
 def login(
     payload: AdminLoginRequest,
     request: Request,
+    response: Response,
     db: Annotated[Session, Depends(get_db)],
 ) -> AdminTokenResponse:
     client_host = request.client.host if request.client else None
@@ -55,6 +56,15 @@ def login(
         expires_delta=expires_delta,
         extra_claims={"username": admin.username},
     )
+    response.set_cookie(
+        key=settings.admin_cookie_name,
+        value=access_token,
+        max_age=int(expires_delta.total_seconds()),
+        httponly=True,
+        secure=settings.admin_cookie_secure,
+        samesite="lax",
+        path="/",
+    )
 
     return AdminTokenResponse(
         access_token=access_token,
@@ -70,7 +80,11 @@ def read_current_admin(current_admin: Annotated[Admin, Depends(get_current_admin
 
 
 @router.post("/logout")
-def logout(current_admin: Annotated[Admin, Depends(get_current_admin)]) -> dict[str, str]:
+def logout(
+    response: Response,
+    current_admin: Annotated[Admin, Depends(get_current_admin)],
+) -> dict[str, str]:
+    response.delete_cookie(key=get_settings().admin_cookie_name, path="/")
     return {"status": "ok"}
 
 

@@ -17,6 +17,7 @@ class Project(IdMixin, TimestampMixin, Base):
     name: Mapped[str] = mapped_column(String(160), nullable=False)
     slug: Mapped[str] = mapped_column(String(160), unique=True, index=True, nullable=False)
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    content_markdown: Mapped[str] = mapped_column(Text, default="", nullable=False)
     cover_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
     tech_stack: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
     github_url: Mapped[str | None] = mapped_column(String(500), nullable=True)

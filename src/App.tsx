@@ -6,6 +6,8 @@ import {
   fetchArticleDetail,
   fetchPublicContent,
   fetchSiteLikeStatus,
+  recordOutboundClick,
+  recordPageView,
   searchPublicContent,
   setArticleLikeStatus,
   setSiteLikeStatus,
@@ -250,10 +252,12 @@ const iconPaths: Record<IconName, ReactNode> = {
 type SocialLinkItem = { label: string; href: string; icon: IconName };
 
 type ProjectCard = {
+  id?: string;
   slug: string;
   name: string;
   year: string;
   desc: string;
+  contentMarkdown?: string | null;
   tags: string[];
   icon: string;
   website: string;
@@ -261,6 +265,7 @@ type ProjectCard = {
 };
 
 type ResourceCard = {
+  id?: string;
   title: string;
   url: string;
   href: string;
@@ -292,6 +297,20 @@ type ArchiveGroup = {
   posts: ArchivePost[];
 };
 
+type HomeTrack = {
+  title: string;
+  artist: string;
+  src: string;
+  duration: number;
+};
+
+type GalleryPhoto = {
+  title: string;
+  caption: string;
+  src: string;
+  alt: string;
+};
+
 type RuntimeSite = {
   profileName: string;
   headingAccent: string;
@@ -299,6 +318,8 @@ type RuntimeSite = {
   email: string;
   github: string;
   homeStatus: string;
+  musicTracks: readonly HomeTrack[];
+  galleryPhotos: readonly GalleryPhoto[];
 };
 
 type FrontendContent = {
@@ -325,6 +346,7 @@ const fallbackProjects: ProjectCard[] = portfolioConfig.projects.map((project, i
   name: project.name.zh.replace(/^[^\u4e00-\u9fa5A-Za-z]+/, ''),
   year: ['2026', '2025', '2024'][index] ?? '2024',
   desc: project.desc.zh,
+  contentMarkdown: '',
   tags: [...project.tags],
   icon: project.icon,
   website: project.website,
@@ -352,6 +374,8 @@ const fallbackSite: RuntimeSite = {
   email: portfolioConfig.contact.email,
   github: portfolioConfig.contact.github,
   homeStatus: homeContent.site.status,
+  musicTracks: homeTracks,
+  galleryPhotos: homeGalleryPhotos,
 };
 
 const fallbackContent: FrontendContent = {
@@ -398,6 +422,46 @@ function readConfigString(configs: Record<string, unknown>, path: string[], flat
   return typeof current === 'string' && current.trim() ? current : fallback;
 }
 
+function readConfigArray<T>(
+  configs: Record<string, unknown>,
+  flatKey: string,
+  fallback: readonly T[],
+  normalize: (item: unknown) => T | null,
+): readonly T[] {
+  const value = configs[flatKey];
+  if (!Array.isArray(value)) {
+    return fallback;
+  }
+
+  const normalized = value.map(normalize).filter((item): item is T => item !== null);
+  return normalized.length > 0 ? normalized : fallback;
+}
+
+function normalizeTrack(item: unknown): HomeTrack | null {
+  if (!item || typeof item !== 'object') return null;
+  const source = item as Record<string, unknown>;
+  const title = typeof source.title === 'string' ? source.title : '';
+  const artist = typeof source.artist === 'string' ? source.artist : '';
+  const src = typeof source.src === 'string' ? source.src : '';
+  const duration = typeof source.duration === 'number' ? source.duration : 180;
+  if (!title.trim()) return null;
+  return { title, artist: artist || '未知歌手', src, duration };
+}
+
+function normalizeGalleryPhoto(item: unknown): GalleryPhoto | null {
+  if (!item || typeof item !== 'object') return null;
+  const source = item as Record<string, unknown>;
+  const title = typeof source.title === 'string' ? source.title : '';
+  const src = typeof source.src === 'string' ? source.src : '';
+  if (!title.trim() || !src.trim()) return null;
+  return {
+    title,
+    caption: typeof source.caption === 'string' ? source.caption : title,
+    src,
+    alt: typeof source.alt === 'string' ? source.alt : title,
+  };
+}
+
 function buildRuntimeSite(configs: Record<string, unknown>): RuntimeSite {
   return {
     profileName: readConfigString(configs, ['profile', 'name'], 'profile.name', fallbackSite.profileName),
@@ -406,6 +470,8 @@ function buildRuntimeSite(configs: Record<string, unknown>): RuntimeSite {
     email: readConfigString(configs, ['contact', 'email'], 'contact.email', fallbackSite.email),
     github: readConfigString(configs, ['contact', 'github'], 'contact.github', fallbackSite.github),
     homeStatus: readConfigString(configs, ['home', 'status'], 'home.status', fallbackSite.homeStatus),
+    musicTracks: readConfigArray(configs, 'home.musicTracks', fallbackSite.musicTracks, normalizeTrack),
+    galleryPhotos: readConfigArray(configs, 'home.galleryPhotos', fallbackSite.galleryPhotos, normalizeGalleryPhoto),
   };
 }
 
@@ -469,10 +535,12 @@ function apiProjectToCard(project: ApiProject, index: number): ProjectCard {
   const nameParts = project.name.match(/[A-Za-z0-9\u4e00-\u9fa5]/g) ?? ['P', String(index + 1)];
 
   return {
+    id: project.id,
     slug: project.slug,
     name: project.name,
     year,
     desc: project.description ?? project.name,
+    contentMarkdown: project.content_markdown,
     tags: project.tech_stack,
     icon: nameParts.slice(0, 2).join('').toUpperCase(),
     website: project.demo_url ?? project.github_url ?? '#',
@@ -498,6 +566,7 @@ function iconForShare(share: ApiShare): IconName {
 
 function apiShareToResource(share: ApiShare): ResourceCard {
   return {
+    id: share.id,
     title: share.title,
     url: displayUrl(share.external_url),
     href: share.external_url,
@@ -775,7 +844,8 @@ function formatPlayerTime(seconds: number) {
   return `${minutes}:${remainingSeconds}`;
 }
 
-function MusicPlayer() {
+function MusicPlayer({ tracks }: { tracks: readonly HomeTrack[] }) {
+  const safeTracks = tracks.length > 0 ? tracks : homeTracks;
   const audioRef = useRef<HTMLAudioElement>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
   const synthGainRef = useRef<GainNode | null>(null);
@@ -787,9 +857,9 @@ function MusicPlayer() {
   const [trackIndex, setTrackIndex] = useState(0);
   const [isPlaying, setIsPlaying] = useState(false);
   const [currentTime, setCurrentTime] = useState<number>(0);
-  const [duration, setDuration] = useState<number>(homeTracks[0].duration);
+  const [duration, setDuration] = useState<number>(safeTracks[0].duration);
   const [playerMessage, setPlayerMessage] = useState('');
-  const currentTrack = homeTracks[trackIndex];
+  const currentTrack = safeTracks[trackIndex] ?? safeTracks[0];
   const hasAudioSource = currentTrack.src.trim().length > 0;
   const activeDuration = Math.max(1, hasAudioSource ? duration : currentTrack.duration);
   const progressPercent = Math.min(100, Math.max(0, (currentTime / activeDuration) * 100));
@@ -823,15 +893,15 @@ function MusicPlayer() {
   }, []);
 
   const selectTrack = useCallback((nextIndex: number) => {
-    const normalizedIndex = (nextIndex + homeTracks.length) % homeTracks.length;
+    const normalizedIndex = (nextIndex + safeTracks.length) % safeTracks.length;
 
     setPlayerMessage('');
     setCurrentTime(0);
     currentTimeRef.current = 0;
     trackIndexRef.current = normalizedIndex;
-    setDuration(homeTracks[normalizedIndex].duration);
+    setDuration(safeTracks[normalizedIndex].duration);
     setTrackIndex(normalizedIndex);
-  }, []);
+  }, [safeTracks]);
 
   const changeTrack = useCallback((step: -1 | 1) => {
     selectTrack(trackIndexRef.current + step);
@@ -1285,8 +1355,6 @@ function DataStatePill({ content }: { content: FrontendContent }) {
   );
 }
 
-type GalleryPhoto = (typeof homeGalleryPhotos)[number];
-
 function PhotoGalleryModal({
   photos,
   activeIndex,
@@ -1440,6 +1508,7 @@ function HomePage({
   onNavigate,
   onOpenArticle,
   onOpenProject,
+  onOutboundClick,
   onCopyEmail,
   emailCopied,
   siteLike,
@@ -1454,6 +1523,7 @@ function HomePage({
   onNavigate: (page: PageKey) => void;
   onOpenArticle: (note: DisplayNote) => void;
   onOpenProject: (project: ProjectCard) => void;
+  onOutboundClick: (targetType: 'share' | 'project' | 'social' | 'external', targetId: string | undefined, targetUrl: string) => void;
   onCopyEmail: () => void;
   emailCopied: boolean;
   siteLike: LikeState;
@@ -1472,6 +1542,7 @@ function HomePage({
   const recommendation = recommendationResource
     ? `${recommendationResource.title}：${recommendationResource.desc}`
     : homeRecommendations[recommendationIndex % homeRecommendations.length];
+  const galleryPhotos = site.galleryPhotos.length > 0 ? site.galleryPhotos : homeGalleryPhotos;
   const hh = String(now.getHours()).padStart(2, '0');
   const mm = String(now.getMinutes()).padStart(2, '0');
   const ss = String(now.getSeconds()).padStart(2, '0');
@@ -1481,17 +1552,17 @@ function HomePage({
   const showPreviousPhoto = useCallback(() => {
     setActivePhotoIndex((current) => (
       current === null
-        ? homeGalleryPhotos.length - 1
-        : (current - 1 + homeGalleryPhotos.length) % homeGalleryPhotos.length
+        ? galleryPhotos.length - 1
+        : (current - 1 + galleryPhotos.length) % galleryPhotos.length
     ));
-  }, []);
+  }, [galleryPhotos]);
   const showNextPhoto = useCallback(() => {
     setActivePhotoIndex((current) => (
       current === null
         ? 0
-        : (current + 1) % homeGalleryPhotos.length
+        : (current + 1) % galleryPhotos.length
     ));
-  }, []);
+  }, [galleryPhotos]);
 
   return (
     <>
@@ -1577,7 +1648,7 @@ function HomePage({
                 <span>{emailCopied ? uiLabels.emailCopied : social.label}</span>
               </button>
             ) : (
-              <a href={social.href} className="social-button" key={social.label} target="_blank" rel="noreferrer">
+              <a href={social.href} className="social-button" key={social.label} target="_blank" rel="noreferrer" onClick={() => onOutboundClick('social', social.label, social.href)}>
                 <Icon name={social.icon} />
                 <span>{social.label}</span>
               </a>
@@ -1679,7 +1750,7 @@ function HomePage({
         <button type="button" onClick={() => onNavigate('share')}>{homeContent.recommendation.buttonLabel}</button>
       </section>
 
-      <MusicPlayer />
+      <MusicPlayer tracks={site.musicTracks} />
 
       <section className="glass-card like-card">
         <button
@@ -1699,7 +1770,7 @@ function HomePage({
     </section>
     {isGalleryOpen && createPortal(
       <PhotoGalleryModal
-        photos={homeGalleryPhotos}
+        photos={galleryPhotos}
         activeIndex={activePhotoIndex}
         onSelect={setActivePhotoIndex}
         onPrevious={showPreviousPhoto}
@@ -1718,11 +1789,13 @@ function BlogPage({
   archiveGroups,
   resources,
   onOpenArticle,
+  onOutboundClick,
 }: {
   notes: DisplayNote[];
   archiveGroups: ArchiveGroup[];
   resources: ResourceCard[];
   onOpenArticle: (note: DisplayNote) => void;
+  onOutboundClick: (targetType: 'share', targetId: string | undefined, targetUrl: string) => void;
 }) {
   const noteList = notes.length > 0 ? notes : fallbackContent.notes;
   const groups = archiveGroups.length > 0 ? archiveGroups : fallbackContent.archiveGroups;
@@ -1731,11 +1804,11 @@ function BlogPage({
   const [isSearching, setIsSearching] = useState(false);
   const [searchResults, setSearchResults] = useState<{ articles: DisplayNote[]; resources: ResourceCard[] } | null>(null);
   const trimmedQuery = searchQuery.trim();
+  const visibleSearchResults = trimmedQuery.length >= 2 ? searchResults : null;
+  const visibleIsSearching = trimmedQuery.length >= 2 && isSearching;
 
   useEffect(() => {
     if (trimmedQuery.length < 2) {
-      setSearchResults(null);
-      setIsSearching(false);
       return undefined;
     }
 
@@ -1804,14 +1877,14 @@ function BlogPage({
         <section className="search-results-card glass-card">
           <div className="mini-title">
             <Icon name="spark" />
-            <span>{isSearching ? '搜索中...' : `Search · ${trimmedQuery}`}</span>
+            <span>{visibleIsSearching ? '搜索中...' : `Search · ${trimmedQuery}`}</span>
           </div>
-          {!isSearching && searchResults && searchResults.articles.length === 0 && searchResults.resources.length === 0 && (
+          {!visibleIsSearching && visibleSearchResults && visibleSearchResults.articles.length === 0 && visibleSearchResults.resources.length === 0 && (
             <p className="empty-copy">没有找到相关内容。</p>
           )}
-          {!isSearching && searchResults && searchResults.articles.length > 0 && (
+          {!visibleIsSearching && visibleSearchResults && visibleSearchResults.articles.length > 0 && (
             <div className="search-result-group">
-              {searchResults.articles.map((note) => (
+              {visibleSearchResults.articles.map((note) => (
                 <button type="button" className="post-row" onClick={() => onOpenArticle(note)} key={note.slug}>
                   <time>{note.date}</time>
                   <h3>{note.title.zh}</h3>
@@ -1822,10 +1895,10 @@ function BlogPage({
               ))}
             </div>
           )}
-          {!isSearching && searchResults && searchResults.resources.length > 0 && (
+          {!visibleIsSearching && visibleSearchResults && visibleSearchResults.resources.length > 0 && (
             <div className="search-resource-row">
-              {searchResults.resources.map((resource) => (
-                <a className="glass-action" href={resource.href} target="_blank" rel="noreferrer" key={resource.href}>
+              {visibleSearchResults.resources.map((resource) => (
+                <a className="glass-action" href={resource.href} target="_blank" rel="noreferrer" onClick={() => onOutboundClick('share', resource.id ?? resource.title, resource.href)} key={resource.href}>
                   <Icon name={resource.icon} />
                   {resource.title}
                 </a>
@@ -1892,9 +1965,11 @@ function BlogPage({
 function ProjectsPage({
   projects,
   onOpenProject,
+  onOutboundClick,
 }: {
   projects: ProjectCard[];
   onOpenProject: (project: ProjectCard) => void;
+  onOutboundClick: (targetType: 'project', targetId: string | undefined, targetUrl: string) => void;
 }) {
   const projectList = projects.length > 0 ? projects : fallbackContent.projects;
 
@@ -1929,11 +2004,11 @@ function ProjectsPage({
                 <Icon name="pen" />
                 {uiLabels.detailAction}
               </button>
-              <a className="glass-action" href={project.website} target="_blank" rel="noreferrer">
+              <a className="glass-action" href={project.website} target="_blank" rel="noreferrer" onClick={() => onOutboundClick('project', project.id ?? project.slug, project.website)}>
                 <Icon name="external" />
                 {uiLabels.projectWebsite}
               </a>
-              <a className="glass-action" href={project.github} target="_blank" rel="noreferrer">
+              <a className="glass-action" href={project.github} target="_blank" rel="noreferrer" onClick={() => onOutboundClick('project', project.id ?? project.slug, project.github)}>
                 <Icon name="github" />
                 {uiLabels.projectGithub}
               </a>
@@ -1945,7 +2020,17 @@ function ProjectsPage({
   );
 }
 
-function ProjectDetailPage({ project, onNavigate }: { project: ProjectCard; onNavigate: (page: PageKey) => void }) {
+function ProjectDetailPage({
+  project,
+  onNavigate,
+  onOutboundClick,
+}: {
+  project: ProjectCard;
+  onNavigate: (page: PageKey) => void;
+  onOutboundClick: (targetType: 'project', targetId: string | undefined, targetUrl: string) => void;
+}) {
+  const hasMarkdownContent = Boolean(project.contentMarkdown?.trim());
+
   return (
     <section className="article-layout">
       <article className="reader-card glass-card">
@@ -1964,7 +2049,7 @@ function ProjectDetailPage({ project, onNavigate }: { project: ProjectCard; onNa
         <div className="article-body">
           <section>
             <h2 id="project-overview">{uiLabels.projectOverviewTitle}</h2>
-            <p>{project.desc}</p>
+            {hasMarkdownContent ? renderMarkdownLite(project.contentMarkdown ?? '') : <p>{project.desc}</p>}
           </section>
           <section>
             <h2 id="project-stack">{uiLabels.projectStackTitle}</h2>
@@ -1977,11 +2062,11 @@ function ProjectDetailPage({ project, onNavigate }: { project: ProjectCard; onNa
           <section>
             <h2 id="project-links">{uiLabels.projectLinksTitle}</h2>
             <div className="action-row">
-              <a className="glass-action" href={project.website} target="_blank" rel="noreferrer">
+              <a className="glass-action" href={project.website} target="_blank" rel="noreferrer" onClick={() => onOutboundClick('project', project.id ?? project.slug, project.website)}>
                 <Icon name="external" />
                 {uiLabels.projectWebsite}
               </a>
-              <a className="glass-action" href={project.github} target="_blank" rel="noreferrer">
+              <a className="glass-action" href={project.github} target="_blank" rel="noreferrer" onClick={() => onOutboundClick('project', project.id ?? project.slug, project.github)}>
                 <Icon name="github" />
                 {uiLabels.projectGithub}
               </a>
@@ -2019,10 +2104,12 @@ function AboutPage({
   site,
   onCopyEmail,
   emailCopied,
+  onOutboundClick,
 }: {
   site: RuntimeSite;
   onCopyEmail: () => void;
   emailCopied: boolean;
+  onOutboundClick: (targetType: 'social', targetId: string | undefined, targetUrl: string) => void;
 }) {
   return (
     <section className="page-shell calm-page">
@@ -2053,7 +2140,7 @@ function AboutPage({
           ))}
         </div>
         <div className="round-actions">
-          <a href={site.github} target="_blank" rel="noreferrer" aria-label={uiLabels.githubAria}>
+          <a href={site.github} target="_blank" rel="noreferrer" aria-label={uiLabels.githubAria} onClick={() => onOutboundClick('social', 'GitHub', site.github)}>
             <Icon name="github" />
           </a>
           <button
@@ -2073,22 +2160,23 @@ function AboutPage({
   );
 }
 
-function SharePage({ resources }: { resources: ResourceCard[] }) {
+function SharePage({
+  resources,
+  onOutboundClick,
+}: {
+  resources: ResourceCard[];
+  onOutboundClick: (targetType: 'share', targetId: string | undefined, targetUrl: string) => void;
+}) {
   const resourceList = resources.length > 0 ? resources : fallbackContent.resources;
   const resourceFilters = useMemo(
     () => ['全部', ...Array.from(new Set(resourceList.map((resource) => resource.category)))],
     [resourceList],
   );
   const [activeFilter, setActiveFilter] = useState<string>('全部');
-  const visibleResources = activeFilter === '全部'
+  const activeResourceFilter = resourceFilters.includes(activeFilter) ? activeFilter : '全部';
+  const visibleResources = activeResourceFilter === '全部'
     ? resourceList
-    : resourceList.filter((resource) => resource.category === activeFilter);
-
-  useEffect(() => {
-    if (!resourceFilters.includes(activeFilter)) {
-      setActiveFilter('全部');
-    }
-  }, [activeFilter, resourceFilters]);
+    : resourceList.filter((resource) => resource.category === activeResourceFilter);
 
   return (
     <section className="page-shell">
@@ -2097,7 +2185,7 @@ function SharePage({ resources }: { resources: ResourceCard[] }) {
         {resourceFilters.map((item) => (
           <button
             type="button"
-            className={activeFilter === item ? 'filter-chip active' : 'filter-chip'}
+            className={activeResourceFilter === item ? 'filter-chip active' : 'filter-chip'}
             onClick={() => setActiveFilter(item)}
             key={item}
           >
@@ -2120,7 +2208,7 @@ function SharePage({ resources }: { resources: ResourceCard[] }) {
             <div>
               <span className="soft-tag">{resource.category}</span>
               <h2>{resource.title}</h2>
-              <a href={resource.href} target="_blank" rel="noreferrer">{resource.url}</a>
+              <a href={resource.href} target="_blank" rel="noreferrer" onClick={() => onOutboundClick('share', resource.id ?? resource.title, resource.href)}>{resource.url}</a>
               <p>{resource.desc}</p>
             </div>
             <div className="resource-meta">
@@ -2339,6 +2427,11 @@ function PublicApp() {
   }, []);
 
   useEffect(() => {
+    recordPageView(likeClientId, `${window.location.pathname}${window.location.hash}`, document.referrer || undefined)
+      .catch(() => undefined);
+  }, [likeClientId, renderedPage, selectedArticle.slug, selectedProjectName]);
+
+  useEffect(() => {
     const controller = new AbortController();
 
     fetchSiteLikeStatus(likeClientId, controller.signal)
@@ -2424,6 +2517,18 @@ function PublicApp() {
     handleNavigate('project');
   };
 
+  const handleOutboundClick = (
+    targetType: 'share' | 'project' | 'social' | 'external',
+    targetId: string | undefined,
+    targetUrl: string,
+  ) => {
+    recordOutboundClick(likeClientId, {
+      target_type: targetType,
+      target_id: targetId,
+      target_url: targetUrl,
+    }).catch(() => undefined);
+  };
+
   const handleCopyEmail = () => {
     copyTextToClipboard(content.site.email)
       .then(() => {
@@ -2498,17 +2603,18 @@ function PublicApp() {
         onNavigate={handleNavigate}
         onOpenArticle={handleOpenArticle}
         onOpenProject={handleOpenProject}
+        onOutboundClick={handleOutboundClick}
         onCopyEmail={handleCopyEmail}
         emailCopied={emailCopied}
         siteLike={siteLike}
         onToggleSiteLike={handleToggleSiteLike}
       />
     ),
-    blog: <BlogPage notes={content.notes} archiveGroups={content.archiveGroups} resources={content.resources} onOpenArticle={handleOpenArticle} />,
-    projects: <ProjectsPage projects={content.projects} onOpenProject={handleOpenProject} />,
-    project: <ProjectDetailPage project={selectedProject} onNavigate={handleNavigate} />,
-    about: <AboutPage site={content.site} onCopyEmail={handleCopyEmail} emailCopied={emailCopied} />,
-    share: <SharePage resources={content.resources} />,
+    blog: <BlogPage notes={content.notes} archiveGroups={content.archiveGroups} resources={content.resources} onOpenArticle={handleOpenArticle} onOutboundClick={handleOutboundClick} />,
+    projects: <ProjectsPage projects={content.projects} onOpenProject={handleOpenProject} onOutboundClick={handleOutboundClick} />,
+    project: <ProjectDetailPage project={selectedProject} onNavigate={handleNavigate} onOutboundClick={handleOutboundClick} />,
+    about: <AboutPage site={content.site} onCopyEmail={handleCopyEmail} emailCopied={emailCopied} onOutboundClick={handleOutboundClick} />,
+    share: <SharePage resources={content.resources} onOutboundClick={handleOutboundClick} />,
     bloggers: <BloggersPage friendLinks={content.friendLinks} />,
     article: <ArticlePage note={selectedArticle} like={selectedArticleLike} onToggleLike={handleToggleArticleLike} />,
     avatar: <AvatarPage />,

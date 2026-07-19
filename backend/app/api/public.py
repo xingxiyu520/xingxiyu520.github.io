@@ -10,7 +10,7 @@ from app.models.friend_link import FriendLink
 from app.models.project import Project
 from app.models.share import Share
 from app.models.taxonomy import Category, Tag
-from app.schemas.content import ArticleOut, FriendLinkOut, LikeOut, ProjectOut, ShareOut
+from app.schemas.content import ArticleOut, FriendLinkOut, LikeOut, OutboundClickCreate, PageViewCreate, ProjectOut, ShareOut
 from app.schemas.site import SiteConfigOut
 from app.services.content import (
     article_detail_options,
@@ -18,6 +18,7 @@ from app.services.content import (
     client_like_hash,
     get_site_config_map,
     read_like_status,
+    record_analytics_event,
     record_article_view,
     set_like_state,
     share_to_out,
@@ -49,6 +50,13 @@ def get_request_like_hash(request: Request) -> str:
     return client_like_hash(f"ip:{get_client_ip(request)}")
 
 
+def get_request_client_key(request: Request) -> str:
+    client_id = request.headers.get("x-analytics-client-id") or request.headers.get("x-like-client-id")
+    if client_id and client_id.strip():
+        return f"client:{client_id}"
+    return f"ip:{get_client_ip(request)}"
+
+
 @router.get("/articles", response_model=list[ArticleOut])
 def list_articles(
     db: Annotated[Session, Depends(get_db)],
@@ -78,6 +86,43 @@ def read_article(
     record_article_view(db, article, get_client_ip(request))
     db.refresh(article)
     return article_to_out(article, include_content=True)
+
+
+@router.post("/analytics/page-view")
+def record_page_view(
+    payload: PageViewCreate,
+    request: Request,
+    db: Annotated[Session, Depends(get_db)],
+) -> dict[str, str]:
+    record_analytics_event(
+        db,
+        event_type="page_view",
+        client_key=get_request_client_key(request),
+        client_ip=get_client_ip(request),
+        path=payload.path,
+        referrer=payload.referrer,
+    )
+    return {"status": "ok"}
+
+
+@router.post("/analytics/outbound-click")
+def record_outbound_click(
+    payload: OutboundClickCreate,
+    request: Request,
+    db: Annotated[Session, Depends(get_db)],
+) -> dict[str, str]:
+    record_analytics_event(
+        db,
+        event_type="outbound_click",
+        client_key=get_request_client_key(request),
+        client_ip=get_client_ip(request),
+        path=payload.path,
+        referrer=payload.referrer,
+        target_type=payload.target_type,
+        target_id=payload.target_id,
+        target_url=payload.target_url,
+    )
+    return {"status": "ok"}
 
 
 @router.get("/site/like", response_model=LikeOut)

@@ -98,10 +98,63 @@ class LikeOut(BaseModel):
     liked: bool
 
 
+class PageViewCreate(BaseModel):
+    path: str = Field(default="/", max_length=500)
+    referrer: str | None = Field(default=None, max_length=500)
+
+
+class OutboundClickCreate(BaseModel):
+    target_type: Literal["share", "project", "social", "external"]
+    target_id: str | None = Field(default=None, max_length=80)
+    target_url: str | None = Field(default=None, max_length=500)
+    path: str = Field(default="/", max_length=500)
+    referrer: str | None = Field(default=None, max_length=500)
+
+
+class AnalyticsDailyOut(BaseModel):
+    date: str
+    page_views: int
+    unique_visitors: int
+    outbound_clicks: int
+
+
+class AnalyticsTopArticleOut(BaseModel):
+    id: str
+    title: str
+    slug: str
+    views: int
+    likes: int
+
+
+class AnalyticsTopItemOut(BaseModel):
+    id: str
+    title: str
+    clicks: int
+
+
+class AnalyticsReferrerOut(BaseModel):
+    referrer: str
+    count: int
+
+
+class AnalyticsOut(BaseModel):
+    total_page_views: int
+    unique_visitors: int
+    article_like_count: int
+    site_like_count: int
+    outbound_click_count: int
+    daily: list[AnalyticsDailyOut]
+    top_articles: list[AnalyticsTopArticleOut]
+    top_shares: list[AnalyticsTopItemOut]
+    top_projects: list[AnalyticsTopItemOut]
+    top_referrers: list[AnalyticsReferrerOut]
+
+
 class ProjectCreate(BaseModel):
     name: str = Field(min_length=1, max_length=160)
     slug: str | None = Field(default=None, max_length=160)
     description: str | None = None
+    content_markdown: str = ""
     cover_url: str | None = Field(default=None, max_length=500)
     tech_stack: list[str] = Field(default_factory=list)
     github_url: str | None = Field(default=None, max_length=500)
@@ -114,6 +167,7 @@ class ProjectUpdate(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=160)
     slug: str | None = Field(default=None, max_length=160)
     description: str | None = None
+    content_markdown: str | None = None
     cover_url: str | None = Field(default=None, max_length=500)
     tech_stack: list[str] | None = None
     github_url: str | None = Field(default=None, max_length=500)
@@ -127,6 +181,7 @@ class ProjectOut(BaseModel):
     name: str
     slug: str
     description: str | None
+    content_markdown: str
     cover_url: str | None
     tech_stack: list[str]
     github_url: str | None
