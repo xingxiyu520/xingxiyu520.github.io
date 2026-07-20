@@ -1006,7 +1006,12 @@ function AdminApp() {
           <AnalyticsView analytics={analytics} />
         )}
         {activeTab === 'site' && (
-          <SiteConfigView form={siteForm} setForm={setSiteForm} onSubmit={handleSiteSubmit} />
+          <SiteConfigView
+            form={siteForm}
+            setForm={setSiteForm}
+            onSubmit={handleSiteSubmit}
+            onAvatarUpload={(file) => void handleUpload(file, 'site_config', (url) => setSiteForm((current) => ({ ...current, avatarUrl: url })))}
+          />
         )}
         {activeTab === 'password' && (
           <PasswordPanel title="修改后台密码" onChanged={() => setMessage({ type: 'success', text: '密码已更新' })} />
@@ -1552,11 +1557,21 @@ function SiteConfigView({
   form,
   setForm,
   onSubmit,
+  onAvatarUpload,
 }: {
   form: SiteFormState;
   setForm: React.Dispatch<React.SetStateAction<SiteFormState>>;
   onSubmit: (event: FormEvent) => void;
+  onAvatarUpload: (file: File) => void;
 }) {
+  const handleAvatarDrop = (event: DragEvent<HTMLElement>) => {
+    event.preventDefault();
+    const file = Array.from(event.dataTransfer.files).find((item) => item.type.startsWith('image/'));
+    if (file) {
+      onAvatarUpload(file);
+    }
+  };
+
   return (
     <section className="admin-panel-grid">
       <article className="admin-card admin-form-card">
@@ -1566,6 +1581,10 @@ function SiteConfigView({
         <form className="admin-form" onSubmit={onSubmit}>
           <Field label="站点名"><input value={form.profileName} onChange={(event) => updateFormField(setForm, 'profileName', event.currentTarget.value)} /></Field>
           <Field label="头像 URL"><input value={form.avatarUrl} onChange={(event) => updateFormField(setForm, 'avatarUrl', event.currentTarget.value)} /></Field>
+          <label className="admin-file-field">
+            <span>上传头像</span>
+            <input type="file" accept="image/*" onChange={(event) => event.currentTarget.files?.[0] && onAvatarUpload(event.currentTarget.files[0])} />
+          </label>
           <Field label="首页昵称"><input value={form.headingAccent} onChange={(event) => updateFormField(setForm, 'headingAccent', event.currentTarget.value)} /></Field>
           <Field label="首页状态"><input value={form.homeStatus} onChange={(event) => updateFormField(setForm, 'homeStatus', event.currentTarget.value)} /></Field>
           <div className="admin-two-col">
@@ -1581,11 +1600,16 @@ function SiteConfigView({
           <button className="admin-primary-button" type="submit">保存配置</button>
         </form>
       </article>
-      <article className="admin-card admin-preview-card">
+      <article
+        className="admin-card admin-preview-card admin-avatar-drop-card"
+        onDrop={handleAvatarDrop}
+        onDragOver={(event) => event.preventDefault()}
+      >
         <p className="admin-eyebrow">Preview</p>
         {form.avatarUrl && <img src={form.avatarUrl} alt="" />}
         <h2>{form.headingAccent || '辛熙羽'}</h2>
         <p>{form.homeStatus || '正在整理灵感与作品'}</p>
+        <small>可把头像图片拖到这里上传</small>
       </article>
     </section>
   );

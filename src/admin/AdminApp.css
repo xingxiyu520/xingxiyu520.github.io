@@ -568,6 +568,15 @@
   box-shadow: 0 16px 36px rgba(164, 195, 221, 0.3);
 }
 
+.admin-avatar-drop-card {
+  border-style: dashed;
+  border-color: rgba(142, 205, 244, 0.72);
+}
+
+.admin-avatar-drop-card small {
+  color: var(--muted);
+}
+
 .admin-media-grid,
 .admin-analytics-grid {
   display: grid;
