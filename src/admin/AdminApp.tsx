@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState, type Dispatch, type DragEvent, type FormEvent, type SetStateAction } from 'react';
+import { useCallback, useEffect, useMemo, useState, type Dispatch, type FormEvent, type SetStateAction } from 'react';
 import { adminLogin, adminLogout, changeAdminPassword, getCurrentAdmin, type AdminProfile } from '../api/admin';
 import { ApiError } from '../api/client';
 import type { ApiArticle, ApiCategory, ApiFriendLink, ApiProject, ApiShare, ApiTag } from '../api/content';
@@ -6,11 +6,9 @@ import {
   archiveItem,
   createCategory,
   createTag,
-  deleteUpload,
   deleteItem,
   getAdminAnalytics,
   getDashboard,
-  getSiteConfig,
   listCategories,
   listAdminArticles,
   listAdminFriendLinks,
@@ -19,9 +17,7 @@ import {
   listTags,
   listUploads,
   restoreItem,
-  updateSiteConfig,
   uploadAdminImage,
-  uploadAdminFile,
   type AnalyticsData,
   type DashboardData,
   type TaxonomyPayload,
@@ -29,6 +25,7 @@ import {
 } from '../api/adminContent';
 import { adminSectionPath, parseAdminRoute, type AdminSection } from './adminRoutes';
 import { ContentWorkspace } from './content/ContentWorkspace';
+import { MediaSiteWorkspace, type MediaSiteNotification } from './MediaSiteWorkspace';
 import './AdminApp.css';
 
 type AdminTab = AdminSection;
@@ -36,17 +33,6 @@ type AdminTab = AdminSection;
 type AdminMessage = {
   type: 'success' | 'error' | 'info';
   text: string;
-};
-
-type SiteFormState = {
-  profileName: string;
-  avatarUrl: string;
-  headingAccent: string;
-  homeStatus: string;
-  github: string;
-  email: string;
-  musicTracksJson: string;
-  galleryPhotosJson: string;
 };
 
 type TaxonomyFormState = {
@@ -67,17 +53,6 @@ const adminTabs: Array<{ key: AdminTab; label: string; hint: string }> = [
   { key: 'site', label: '站点', hint: '个人配置' },
   { key: 'password', label: '密码', hint: '安全' },
 ];
-
-const emptySiteForm: SiteFormState = {
-  profileName: '',
-  avatarUrl: '',
-  headingAccent: '',
-  homeStatus: '',
-  github: '',
-  email: '',
-  musicTracksJson: '[]',
-  galleryPhotosJson: '[]',
-};
 
 const emptyTaxonomyForm: TaxonomyFormState = {
   name: '',
@@ -109,46 +84,6 @@ function errorText(error: unknown) {
   }
 
   return '操作失败，请稍后再试';
-}
-
-function readFlatConfig(configs: Record<string, unknown>, key: string) {
-  const value = configs[key];
-  return typeof value === 'string' ? value : '';
-}
-
-function readJsonConfig(configs: Record<string, unknown>, key: string, fallback = '[]') {
-  const value = configs[key];
-  if (typeof value === 'string') {
-    return value || fallback;
-  }
-
-  if (value === undefined) {
-    return fallback;
-  }
-
-  try {
-    return JSON.stringify(value, null, 2);
-  } catch {
-    return fallback;
-  }
-}
-
-function formatBytes(value: number) {
-  if (value >= 1024 * 1024) {
-    return `${(value / 1024 / 1024).toFixed(1)} MB`;
-  }
-  if (value >= 1024) {
-    return `${(value / 1024).toFixed(1)} KB`;
-  }
-  return `${value} B`;
-}
-
-function parseJsonField(value: string) {
-  try {
-    return JSON.parse(value || '[]') as unknown;
-  } catch {
-    throw new Error('JSON 格式不正确，请检查音乐列表或相册图片配置');
-  }
 }
 
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
@@ -289,7 +224,6 @@ function AdminApp() {
   const [categories, setCategories] = useState<ApiCategory[]>([]);
   const [tags, setTags] = useState<ApiTag[]>([]);
   const [analytics, setAnalytics] = useState<AnalyticsData | null>(null);
-  const [siteForm, setSiteForm] = useState<SiteFormState>(emptySiteForm);
   const [taxonomyForm, setTaxonomyForm] = useState<TaxonomyFormState>(emptyTaxonomyForm);
   const activeTab = route.section;
 
@@ -315,13 +249,12 @@ function AdminApp() {
   const loadData = useCallback(async () => {
     setBusy(true);
     try {
-      const [dashboardData, articleData, projectData, friendData, shareData, siteData, uploadData, categoryData, tagData, analyticsData] = await Promise.all([
+      const [dashboardData, articleData, projectData, friendData, shareData, uploadData, categoryData, tagData, analyticsData] = await Promise.all([
         getDashboard(),
         listAdminArticles(),
         listAdminProjects(),
         listAdminFriendLinks(),
         listAdminShares(),
-        getSiteConfig(),
         listUploads(),
         listCategories(),
         listTags(),
@@ -336,16 +269,6 @@ function AdminApp() {
       setCategories(categoryData);
       setTags(tagData);
       setAnalytics(analyticsData);
-      setSiteForm({
-        profileName: readFlatConfig(siteData.configs, 'profile.name'),
-        avatarUrl: readFlatConfig(siteData.configs, 'profile.avatarUrl'),
-        headingAccent: readFlatConfig(siteData.configs, 'hero.headingAccent'),
-        homeStatus: readFlatConfig(siteData.configs, 'home.status'),
-        github: readFlatConfig(siteData.configs, 'contact.github'),
-        email: readFlatConfig(siteData.configs, 'contact.email'),
-        musicTracksJson: readJsonConfig(siteData.configs, 'home.musicTracks'),
-        galleryPhotosJson: readJsonConfig(siteData.configs, 'home.galleryPhotos'),
-      });
     } catch (error) {
       setMessage({ type: 'error', text: errorText(error) });
     } finally {
@@ -417,22 +340,6 @@ function AdminApp() {
     }
   };
 
-  const handleSiteSubmit = (event: FormEvent) => {
-    event.preventDefault();
-    void runAction('站点配置已保存', async () => {
-      await updateSiteConfig({
-        'profile.name': siteForm.profileName,
-        'profile.avatarUrl': siteForm.avatarUrl,
-        'hero.headingAccent': siteForm.headingAccent,
-        'home.status': siteForm.homeStatus,
-        'contact.github': siteForm.github,
-        'contact.email': siteForm.email,
-        'home.musicTracks': parseJsonField(siteForm.musicTracksJson),
-        'home.galleryPhotos': parseJsonField(siteForm.galleryPhotosJson),
-      });
-    });
-  };
-
   const handleTaxonomySubmit = (event: FormEvent) => {
     event.preventDefault();
     void runAction(taxonomyForm.kind === 'category' ? '分类已创建' : '标签已创建', async () => {
@@ -445,31 +352,17 @@ function AdminApp() {
     });
   };
 
-  const handleMediaUpload = (file: File, ownerType: string) => {
-    void runAction('媒体已上传', async () => {
-      const uploaded = await uploadAdminFile(file, ownerType);
-      setMediaFiles((current) => [uploaded, ...current.filter((item) => item.id !== uploaded.id)]);
-    });
-  };
-
-  const handleMediaDelete = (file: UploadedFile) => {
-    if (!window.confirm(`确认删除 ${file.original_name} 吗？`)) return;
-    void runAction('媒体已删除', () => deleteUpload(file.id));
-  };
-
-  const handleCopyUrl = (url: string) => {
-    navigator.clipboard.writeText(url)
-      .then(() => setMessage({ type: 'success', text: 'URL 已复制' }))
-      .catch(() => setMessage({ type: 'error', text: '复制失败，请手动复制 URL' }));
-  };
-
-  const handleInsertMediaToArticle = (file: UploadedFile) => {
-    const snippet = file.mime_type.startsWith('audio/')
-      ? `<audio controls src="${file.url}"></audio>`
-      : `![${file.original_name}](${file.url})`;
+  const handleInsertMediaToArticle = (snippet: string) => {
     window.sessionStorage.setItem('admin.pendingArticleSnippet', snippet);
     navigateAdmin('/admin/articles/new');
   };
+
+  const handleMediaSiteNotice = useCallback((notice: MediaSiteNotification) => {
+    setMessage(notice);
+    if (notice.type === 'success') {
+      void loadData();
+    }
+  }, [loadData]);
 
   const handleArchive = (resourceType: string, id: string) => {
     void runAction('已归档', () => archiveItem(resourceType, id));
@@ -578,12 +471,10 @@ function AdminApp() {
           />
         )}
         {activeTab === 'media' && (
-          <MediaLibraryView
-            files={mediaFiles}
-            onUpload={handleMediaUpload}
-            onCopyUrl={handleCopyUrl}
-            onInsertToArticle={handleInsertMediaToArticle}
-            onDelete={handleMediaDelete}
+          <MediaSiteWorkspace
+            mode="media"
+            onNotify={handleMediaSiteNotice}
+            onInsertToArticle={(snippet) => handleInsertMediaToArticle(snippet)}
           />
         )}
         {activeTab === 'taxonomy' && (
@@ -599,11 +490,10 @@ function AdminApp() {
           <AnalyticsView analytics={analytics} />
         )}
         {activeTab === 'site' && (
-          <SiteConfigView
-            form={siteForm}
-            setForm={setSiteForm}
-            onSubmit={handleSiteSubmit}
-            onAvatarUpload={(file) => void handleUpload(file, 'site_config', (url) => setSiteForm((current) => ({ ...current, avatarUrl: url })))}
+          <MediaSiteWorkspace
+            mode="site"
+            onNotify={handleMediaSiteNotice}
+            onDirtyChange={setContentDirty}
           />
         )}
         {activeTab === 'password' && (
@@ -655,83 +545,6 @@ function DashboardView({ dashboard }: { dashboard: DashboardData | null }) {
           {dashboard?.recent_updates.length === 0 && <p className="admin-empty">还没有更新记录。</p>}
         </div>
       </article>
-    </section>
-  );
-}
-
-function MediaLibraryView({
-  files,
-  onUpload,
-  onCopyUrl,
-  onInsertToArticle,
-  onDelete,
-}: {
-  files: UploadedFile[];
-  onUpload: (file: File, ownerType: string) => void;
-  onCopyUrl: (url: string) => void;
-  onInsertToArticle: (file: UploadedFile) => void;
-  onDelete: (file: UploadedFile) => void;
-}) {
-  const [query, setQuery] = useState('');
-  const [ownerType, setOwnerType] = useState('全部');
-  const filteredFiles = files.filter((file) => {
-    const matchesType = ownerType === '全部' || file.owner_type === ownerType;
-    const source = `${file.original_name} ${file.url} ${file.mime_type}`.toLowerCase();
-    return matchesType && source.includes(query.trim().toLowerCase());
-  });
-
-  return (
-    <section className="admin-panel-grid">
-      <article className="admin-card">
-        <div className="admin-card-head">
-          <div><p className="admin-eyebrow">Media Library</p><h2>媒体库</h2></div>
-          <div className="admin-form-actions">
-            <label className="admin-secondary-file">
-              上传图片
-              <input type="file" accept="image/*" onChange={(event) => event.currentTarget.files?.[0] && onUpload(event.currentTarget.files[0], 'gallery')} />
-            </label>
-            <label className="admin-secondary-file">
-              上传音乐
-              <input type="file" accept="audio/*" onChange={(event) => event.currentTarget.files?.[0] && onUpload(event.currentTarget.files[0], 'music')} />
-            </label>
-          </div>
-        </div>
-        <div className="admin-filter-row">
-          <input value={query} onChange={(event) => setQuery(event.currentTarget.value)} placeholder="搜索文件名、URL 或类型" />
-          <select value={ownerType} onChange={(event) => setOwnerType(event.currentTarget.value)}>
-            {['全部', 'article', 'project', 'share', 'friend_link', 'gallery', 'music', 'misc'].map((item) => (
-              <option value={item} key={item}>{item}</option>
-            ))}
-          </select>
-        </div>
-      </article>
-      <div className="admin-media-grid">
-        {filteredFiles.map((file) => (
-          <article className="admin-card admin-media-card" key={file.id}>
-            <div className="admin-media-thumb">
-              {file.mime_type.startsWith('image/') ? (
-                <img src={file.url} alt={file.original_name} />
-              ) : (
-                <audio controls src={file.url} />
-              )}
-            </div>
-            <div>
-              <strong>{file.original_name}</strong>
-              <small>{formatBytes(file.size_bytes)} · {file.owner_type ?? '未归类'} · {formatDate(file.created_at)}</small>
-              <span className={file.is_used ? 'admin-usage-badge used' : 'admin-usage-badge'}>
-                {file.is_used ? '使用中' : '未使用'}
-              </span>
-              <code>{file.url}</code>
-            </div>
-            <div className="admin-row-actions">
-              <button type="button" onClick={() => onCopyUrl(file.url)}>复制 URL</button>
-              <button type="button" onClick={() => onInsertToArticle(file)}>插入文章</button>
-              {!file.is_used && <button type="button" className="danger" onClick={() => onDelete(file)}>删除未使用</button>}
-            </div>
-          </article>
-        ))}
-        {filteredFiles.length === 0 && <p className="admin-empty">还没有媒体文件。</p>}
-      </div>
     </section>
   );
 }
@@ -859,68 +672,6 @@ function AdminTopList({ title, rows }: { title: string; rows: Array<{ title: str
         {rows.length === 0 && <p className="admin-empty">暂无数据。</p>}
       </div>
     </article>
-  );
-}
-
-function SiteConfigView({
-  form,
-  setForm,
-  onSubmit,
-  onAvatarUpload,
-}: {
-  form: SiteFormState;
-  setForm: React.Dispatch<React.SetStateAction<SiteFormState>>;
-  onSubmit: (event: FormEvent) => void;
-  onAvatarUpload: (file: File) => void;
-}) {
-  const handleAvatarDrop = (event: DragEvent<HTMLElement>) => {
-    event.preventDefault();
-    const file = Array.from(event.dataTransfer.files).find((item) => item.type.startsWith('image/'));
-    if (file) {
-      onAvatarUpload(file);
-    }
-  };
-
-  return (
-    <section className="admin-panel-grid">
-      <article className="admin-card admin-form-card">
-        <div className="admin-card-head">
-          <div><p className="admin-eyebrow">Site Config</p><h2>站点配置</h2></div>
-        </div>
-        <form className="admin-form" onSubmit={onSubmit}>
-          <Field label="站点名"><input value={form.profileName} onChange={(event) => updateFormField(setForm, 'profileName', event.currentTarget.value)} /></Field>
-          <Field label="头像 URL"><input value={form.avatarUrl} onChange={(event) => updateFormField(setForm, 'avatarUrl', event.currentTarget.value)} /></Field>
-          <label className="admin-file-field">
-            <span>上传头像</span>
-            <input type="file" accept="image/*" onChange={(event) => event.currentTarget.files?.[0] && onAvatarUpload(event.currentTarget.files[0])} />
-          </label>
-          <Field label="首页昵称"><input value={form.headingAccent} onChange={(event) => updateFormField(setForm, 'headingAccent', event.currentTarget.value)} /></Field>
-          <Field label="首页状态"><input value={form.homeStatus} onChange={(event) => updateFormField(setForm, 'homeStatus', event.currentTarget.value)} /></Field>
-          <div className="admin-two-col">
-            <Field label="GitHub"><input value={form.github} onChange={(event) => updateFormField(setForm, 'github', event.currentTarget.value)} /></Field>
-            <Field label="Email"><input value={form.email} onChange={(event) => updateFormField(setForm, 'email', event.currentTarget.value)} /></Field>
-          </div>
-          <Field label="音乐列表 JSON">
-            <textarea value={form.musicTracksJson} onChange={(event) => updateFormField(setForm, 'musicTracksJson', event.currentTarget.value)} rows={7} />
-          </Field>
-          <Field label="相册图片 JSON">
-            <textarea value={form.galleryPhotosJson} onChange={(event) => updateFormField(setForm, 'galleryPhotosJson', event.currentTarget.value)} rows={7} />
-          </Field>
-          <button className="admin-primary-button" type="submit">保存配置</button>
-        </form>
-      </article>
-      <article
-        className="admin-card admin-preview-card admin-avatar-drop-card"
-        onDrop={handleAvatarDrop}
-        onDragOver={(event) => event.preventDefault()}
-      >
-        <p className="admin-eyebrow">Preview</p>
-        {form.avatarUrl && <img src={form.avatarUrl} alt="" />}
-        <h2>{form.headingAccent || '辛熙羽'}</h2>
-        <p>{form.homeStatus || '正在整理灵感与作品'}</p>
-        <small>可把头像图片拖到这里上传</small>
-      </article>
-    </section>
   );
 }
 

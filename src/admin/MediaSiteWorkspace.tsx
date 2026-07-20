@@ -37,6 +37,7 @@ export type MediaSiteWorkspaceProps = {
   mode: MediaSiteWorkspaceMode;
   onNotify?: (notification: MediaSiteNotification) => void;
   onInsertToArticle?: (snippet: string, file: UploadedFile) => void;
+  onDirtyChange?: (dirty: boolean) => void;
 };
 
 type SiteFormState = {
@@ -140,7 +141,7 @@ async function audioDurationFromFile(file: File) {
   }
 }
 
-export function MediaSiteWorkspace({ mode, onNotify, onInsertToArticle }: MediaSiteWorkspaceProps) {
+export function MediaSiteWorkspace({ mode, onNotify, onInsertToArticle, onDirtyChange }: MediaSiteWorkspaceProps) {
   const [files, setFiles] = useState<UploadedFile[]>([]);
   const [siteForm, setSiteForm] = useState<SiteFormState>(emptySiteForm);
   const [savedSiteSnapshot, setSavedSiteSnapshot] = useState(() => JSON.stringify(emptySiteForm));
@@ -190,6 +191,11 @@ export function MediaSiteWorkspace({ mode, onNotify, onInsertToArticle }: MediaS
   }, [loadWorkspace]);
 
   const siteDirty = mode === 'site' && JSON.stringify(siteForm) !== savedSiteSnapshot;
+
+  useEffect(() => {
+    onDirtyChange?.(siteDirty);
+    return () => onDirtyChange?.(false);
+  }, [onDirtyChange, siteDirty]);
 
   useEffect(() => {
     if (!siteDirty) return undefined;
