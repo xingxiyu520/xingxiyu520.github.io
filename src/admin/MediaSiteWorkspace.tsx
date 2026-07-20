@@ -53,6 +53,8 @@ type SiteFormState = {
 
 type PickerKind = 'gallery' | 'music' | null;
 
+const MEDIA_PAGE_SIZE = 5;
+
 const emptySiteForm: SiteFormState = {
   profileName: '',
   avatarUrl: '',
@@ -655,6 +657,11 @@ function EditableGallery({
   onUpload: (event: ChangeEvent<HTMLInputElement>) => void;
   onPick: () => void;
 }) {
+  const [page, setPage] = useState(1);
+  const pageCount = Math.max(1, Math.ceil(items.length / MEDIA_PAGE_SIZE));
+  const activePage = Math.min(page, pageCount);
+  const pageStart = (activePage - 1) * MEDIA_PAGE_SIZE;
+
   const handleDrop = (event: DragEvent<HTMLElement>, targetIndex: number) => {
     event.preventDefault();
     if (draggedIndex !== null) onChange(moveItem(items, draggedIndex, targetIndex));
@@ -672,7 +679,9 @@ function EditableGallery({
       </div>
       {items.length === 0 && <div className="msw-fallback-warning">相册为空时，首页会继续显示代码内置的 fallback 图片。</div>}
       <div className="msw-editor-list">
-        {items.map((item, index) => (
+        {items.slice(pageStart, pageStart + MEDIA_PAGE_SIZE).map((item, pageIndex) => {
+          const index = pageStart + pageIndex;
+          return (
           <article
             className={`msw-editor-item${draggedIndex === index ? ' is-dragging' : ''}`}
             draggable
@@ -692,8 +701,10 @@ function EditableGallery({
             </div>
             <ItemActions index={index} count={items.length} onMove={(target) => onChange(moveItem(items, index, target))} onRemove={() => onChange(items.filter((_, itemIndex) => itemIndex !== index))} />
           </article>
-        ))}
+          );
+        })}
       </div>
+      <MediaPagination page={activePage} pageCount={pageCount} totalItems={items.length} onPageChange={setPage} label="相册" />
     </section>
   );
 }
@@ -715,6 +726,11 @@ function EditableMusic({
   onUpload: (event: ChangeEvent<HTMLInputElement>) => void;
   onPick: () => void;
 }) {
+  const [page, setPage] = useState(1);
+  const pageCount = Math.max(1, Math.ceil(items.length / MEDIA_PAGE_SIZE));
+  const activePage = Math.min(page, pageCount);
+  const pageStart = (activePage - 1) * MEDIA_PAGE_SIZE;
+
   const handleDrop = (event: DragEvent<HTMLElement>, targetIndex: number) => {
     event.preventDefault();
     if (draggedIndex !== null) onChange(moveItem(items, draggedIndex, targetIndex));
@@ -732,7 +748,9 @@ function EditableMusic({
       </div>
       {items.length === 0 && <div className="msw-fallback-warning">音乐列表为空时，首页会继续使用代码内置的 fallback 音乐。</div>}
       <div className="msw-editor-list">
-        {items.map((item, index) => (
+        {items.slice(pageStart, pageStart + MEDIA_PAGE_SIZE).map((item, pageIndex) => {
+          const index = pageStart + pageIndex;
+          return (
           <article
             className={`msw-editor-item msw-track-item${draggedIndex === index ? ' is-dragging' : ''}`}
             draggable
@@ -755,9 +773,35 @@ function EditableMusic({
             </div>
             <ItemActions index={index} count={items.length} onMove={(target) => onChange(moveItem(items, index, target))} onRemove={() => onChange(items.filter((_, itemIndex) => itemIndex !== index))} />
           </article>
-        ))}
+          );
+        })}
       </div>
+      <MediaPagination page={activePage} pageCount={pageCount} totalItems={items.length} onPageChange={setPage} label="音乐" />
     </section>
+  );
+}
+
+function MediaPagination({
+  page,
+  pageCount,
+  totalItems,
+  onPageChange,
+  label,
+}: {
+  page: number;
+  pageCount: number;
+  totalItems: number;
+  onPageChange: (page: number) => void;
+  label: string;
+}) {
+  if (pageCount <= 1) return null;
+
+  return (
+    <nav className="msw-pagination" aria-label={`${label}分页`}>
+      <button type="button" aria-label="上一页" title="上一页" disabled={page === 1} onClick={() => onPageChange(page - 1)}>←</button>
+      <span>第 {page} / {pageCount} 页 · 每页 {MEDIA_PAGE_SIZE} 项 · 共 {totalItems} 项</span>
+      <button type="button" aria-label="下一页" title="下一页" disabled={page === pageCount} onClick={() => onPageChange(page + 1)}>→</button>
+    </nav>
   );
 }
 
