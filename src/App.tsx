@@ -18,6 +18,7 @@ import {
 } from './api/content';
 import { notesMetadata, type NoteMetadata } from './data/notes';
 import { portfolioConfig } from './data/config';
+import { copyTextToClipboard } from './utils/clipboard';
 import {
   aboutContent,
   archiveGroups,
@@ -759,28 +760,6 @@ function toggleLike(current: LikeState) {
 
 function formatLikeCount(count: number) {
   return count.toLocaleString('en-US');
-}
-
-async function copyTextToClipboard(text: string) {
-  if (navigator.clipboard && window.isSecureContext) {
-    await navigator.clipboard.writeText(text);
-    return;
-  }
-
-  const textarea = document.createElement('textarea');
-  textarea.value = text;
-  textarea.setAttribute('readonly', '');
-  textarea.style.position = 'fixed';
-  textarea.style.left = '-9999px';
-  document.body.appendChild(textarea);
-  textarea.select();
-
-  const copied = document.execCommand('copy');
-  document.body.removeChild(textarea);
-
-  if (!copied) {
-    throw new Error('Copy command failed');
-  }
 }
 
 const Icon = ({ name, className }: { name: IconName; className?: string }) => (
@@ -2642,7 +2621,8 @@ function PublicApp() {
 }
 
 function App() {
-  const isAdminRoute = window.location.pathname.replace(/\/+$/, '') === '/admin';
+  const normalizedPath = window.location.pathname.replace(/\/+$/, '') || '/';
+  const isAdminRoute = normalizedPath === '/admin' || normalizedPath.startsWith('/admin/');
 
   if (isAdminRoute) {
     return <AdminApp />;
