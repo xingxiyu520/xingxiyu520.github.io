@@ -1,4 +1,13 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type CSSProperties,
+  type ReactNode,
+  type RefObject,
+} from 'react';
 import { createPortal } from 'react-dom';
 import './App.css';
 import {
@@ -823,9 +832,28 @@ function formatPlayerTime(seconds: number) {
   return `${minutes}:${remainingSeconds}`;
 }
 
-function MusicPlayer({ tracks }: { tracks: readonly HomeTrack[] }) {
-  const safeTracks = tracks.length > 0 ? tracks : homeTracks;
-  const audioRef = useRef<HTMLAudioElement>(null);
+type MusicPlayerController = {
+  currentTrack: HomeTrack;
+  isPlaying: boolean;
+  hasAudioSource: boolean;
+  currentTime: number;
+  activeDuration: number;
+  progressPercent: number;
+  playerMessage: string;
+  togglePlayback: () => void;
+  previousTrack: () => void;
+  nextTrack: () => void;
+  seek: (value: number) => void;
+  handleLoadedMetadata: () => void;
+  handleTimeUpdate: () => void;
+  handlePlaybackError: () => void;
+};
+
+function useMusicPlayer(
+  tracks: readonly HomeTrack[],
+  audioRef: RefObject<HTMLAudioElement | null>,
+): MusicPlayerController {
+  const safeTracks = useMemo(() => (tracks.length > 0 ? tracks : homeTracks), [tracks]);
   const audioContextRef = useRef<AudioContext | null>(null);
   const synthGainRef = useRef<GainNode | null>(null);
   const synthIntervalRef = useRef<number | undefined>(undefined);
@@ -833,6 +861,7 @@ function MusicPlayer({ tracks }: { tracks: readonly HomeTrack[] }) {
   const synthStartedAtRef = useRef(0);
   const currentTimeRef = useRef(0);
   const trackIndexRef = useRef(0);
+  const previousTracksRef = useRef(safeTracks);
   const [trackIndex, setTrackIndex] = useState(0);
   const [isPlaying, setIsPlaying] = useState(false);
   const [currentTime, setCurrentTime] = useState<number>(0);
@@ -885,6 +914,40 @@ function MusicPlayer({ tracks }: { tracks: readonly HomeTrack[] }) {
   const changeTrack = useCallback((step: -1 | 1) => {
     selectTrack(trackIndexRef.current + step);
   }, [selectTrack]);
+  const previousTrack = useCallback(() => changeTrack(-1), [changeTrack]);
+  const nextTrack = useCallback(() => changeTrack(1), [changeTrack]);
+
+  useEffect(() => {
+    const previousTrack = previousTracksRef.current[trackIndexRef.current];
+    previousTracksRef.current = safeTracks;
+
+    if (!previousTrack) {
+      selectTrack(0);
+      return;
+    }
+
+    const normalizedSource = previousTrack.src.trim();
+    const sourceMatch = normalizedSource
+      ? safeTracks.findIndex((track) => track.src.trim() === normalizedSource)
+      : -1;
+    const metadataMatch = !normalizedSource
+      ? safeTracks.findIndex((track) => (
+        track.title === previousTrack.title && track.artist === previousTrack.artist
+      ))
+      : -1;
+    const matchedIndex = sourceMatch >= 0 ? sourceMatch : metadataMatch;
+    const nextIndex = matchedIndex >= 0 ? matchedIndex : 0;
+
+    trackIndexRef.current = nextIndex;
+    setTrackIndex(nextIndex);
+
+    if (matchedIndex < 0) {
+      currentTimeRef.current = 0;
+      setCurrentTime(0);
+      setDuration(safeTracks[nextIndex].duration);
+      setPlayerMessage('');
+    }
+  }, [safeTracks, selectTrack]);
 
   useEffect(() => {
     const audio = audioRef.current;
@@ -896,7 +959,7 @@ function MusicPlayer({ tracks }: { tracks: readonly HomeTrack[] }) {
     audio.pause();
     audio.currentTime = 0;
     audio.load();
-  }, [trackIndex]);
+  }, [audioRef, currentTrack.src]);
 
   useEffect(() => {
     const audio = audioRef.current;
@@ -917,7 +980,7 @@ function MusicPlayer({ tracks }: { tracks: readonly HomeTrack[] }) {
     });
 
     return undefined;
-  }, [hasAudioSource, isPlaying, trackIndex]);
+  }, [audioRef, hasAudioSource, isPlaying, trackIndex]);
 
   useEffect(() => {
     if (hasAudioSource || !isPlaying) {
@@ -1000,12 +1063,12 @@ function MusicPlayer({ tracks }: { tracks: readonly HomeTrack[] }) {
     };
   }, [changeTrack, currentTrack.duration, hasAudioSource, isPlaying, stopSynthPlayback, trackIndex]);
 
-  const handleTogglePlayback = () => {
+  const handleTogglePlayback = useCallback(() => {
     setPlayerMessage('');
     setIsPlaying((playing) => !playing);
-  };
+  }, []);
 
-  const handleSeek = (value: number) => {
+  const handleSeek = useCallback((value: number) => {
     const nextTime = (value / 100) * activeDuration;
 
     setCurrentTime(nextTime);
@@ -1018,9 +1081,9 @@ function MusicPlayer({ tracks }: { tracks: readonly HomeTrack[] }) {
     if (!hasAudioSource && isPlaying) {
       synthStartedAtRef.current = performance.now() - nextTime * 1000;
     }
-  };
+  }, [activeDuration, audioRef, hasAudioSource, isPlaying]);
 
-  const handleLoadedMetadata = () => {
+  const handleLoadedMetadata = useCallback(() => {
     const audio = audioRef.current;
 
     if (!audio) {
@@ -1032,9 +1095,9 @@ function MusicPlayer({ tracks }: { tracks: readonly HomeTrack[] }) {
       : currentTrack.duration;
 
     setDuration(audioDuration);
-  };
+  }, [audioRef, currentTrack.duration]);
 
-  const handleTimeUpdate = () => {
+  const handleTimeUpdate = useCallback(() => {
     const audio = audioRef.current;
 
     if (!audio) {
@@ -1042,7 +1105,40 @@ function MusicPlayer({ tracks }: { tracks: readonly HomeTrack[] }) {
     }
 
     setCurrentTime(audio.currentTime);
+  }, [audioRef]);
+
+  const handlePlaybackError = useCallback(() => {
+    setIsPlaying(false);
+    setPlayerMessage(uiLabels.musicUnavailable);
+  }, []);
+
+  return {
+    currentTrack,
+    isPlaying,
+    hasAudioSource,
+    currentTime,
+    activeDuration,
+    progressPercent,
+    playerMessage,
+    togglePlayback: handleTogglePlayback,
+    previousTrack,
+    nextTrack,
+    seek: handleSeek,
+    handleLoadedMetadata,
+    handleTimeUpdate,
+    handlePlaybackError,
   };
+}
+
+function MusicPlayer({ player }: { player: MusicPlayerController }) {
+  const {
+    currentTrack,
+    isPlaying,
+    currentTime,
+    activeDuration,
+    progressPercent,
+    playerMessage,
+  } = player;
 
   const progressStyle = {
     '--music-progress': `${progressPercent}%`,
@@ -1050,23 +1146,11 @@ function MusicPlayer({ tracks }: { tracks: readonly HomeTrack[] }) {
 
   return (
     <section className={isPlaying ? 'glass-card music-card is-playing' : 'glass-card music-card'}>
-      <audio
-        ref={audioRef}
-        src={hasAudioSource ? currentTrack.src : undefined}
-        preload="metadata"
-        onLoadedMetadata={handleLoadedMetadata}
-        onTimeUpdate={handleTimeUpdate}
-        onEnded={() => changeTrack(1)}
-        onError={() => {
-          setIsPlaying(false);
-          setPlayerMessage(uiLabels.musicUnavailable);
-        }}
-      />
       <div className="music-main">
         <button
           type="button"
           className="music-play"
-          onClick={handleTogglePlayback}
+          onClick={player.togglePlayback}
           aria-label={isPlaying ? uiLabels.pauseMusicAria : uiLabels.playMusicAria}
         >
           <Icon name={isPlaying ? 'pause' : 'play'} />
@@ -1078,11 +1162,11 @@ function MusicPlayer({ tracks }: { tracks: readonly HomeTrack[] }) {
         </div>
       </div>
       <div className="music-toolbar">
-        <button type="button" onClick={() => changeTrack(-1)} aria-label={uiLabels.previousTrackAria}>
+        <button type="button" onClick={player.previousTrack} aria-label={uiLabels.previousTrackAria}>
           <Icon name="skipBack" />
         </button>
         <span>{formatPlayerTime(currentTime)} / {formatPlayerTime(activeDuration)}</span>
-        <button type="button" onClick={() => changeTrack(1)} aria-label={uiLabels.nextTrackAria}>
+        <button type="button" onClick={player.nextTrack} aria-label={uiLabels.nextTrackAria}>
           <Icon name="skipForward" />
         </button>
       </div>
@@ -1093,13 +1177,44 @@ function MusicPlayer({ tracks }: { tracks: readonly HomeTrack[] }) {
         max="100"
         step="0.1"
         value={progressPercent}
-        onInput={(event) => handleSeek(Number(event.currentTarget.value))}
-        onChange={(event) => handleSeek(Number(event.currentTarget.value))}
+        onInput={(event) => player.seek(Number(event.currentTarget.value))}
+        onChange={(event) => player.seek(Number(event.currentTarget.value))}
         aria-label={uiLabels.seekMusicAria}
         style={progressStyle}
       />
-      {playerMessage && <p className="music-status">{playerMessage}</p>}
+      {playerMessage && <p className="music-status" role="status">{playerMessage}</p>}
     </section>
+  );
+}
+
+function MiniMusicPlayer({ player }: { player: MusicPlayerController }) {
+  return (
+    <aside
+      className={player.isPlaying ? 'mini-music-player is-playing' : 'mini-music-player'}
+      aria-label={homeContent.music.eyebrow}
+    >
+      <div className="mini-music-copy">
+        <strong title={player.currentTrack.title}>{player.currentTrack.title}</strong>
+        <span>{player.currentTrack.artist}</span>
+        {player.playerMessage && <small role="status">{player.playerMessage}</small>}
+      </div>
+      <div className="mini-music-controls">
+        <button type="button" onClick={player.previousTrack} aria-label={uiLabels.previousTrackAria}>
+          <Icon name="skipBack" />
+        </button>
+        <button
+          type="button"
+          className="mini-music-toggle"
+          onClick={player.togglePlayback}
+          aria-label={player.isPlaying ? uiLabels.pauseMusicAria : uiLabels.playMusicAria}
+        >
+          <Icon name={player.isPlaying ? 'pause' : 'play'} />
+        </button>
+        <button type="button" onClick={player.nextTrack} aria-label={uiLabels.nextTrackAria}>
+          <Icon name="skipForward" />
+        </button>
+      </div>
+    </aside>
   );
 }
 
@@ -1483,6 +1598,7 @@ function HomePage({
   projects,
   resources,
   site,
+  musicPlayer,
   socialItems,
   onNavigate,
   onOpenArticle,
@@ -1498,6 +1614,7 @@ function HomePage({
   projects: ProjectCard[];
   resources: ResourceCard[];
   site: RuntimeSite;
+  musicPlayer: MusicPlayerController;
   socialItems: SocialLinkItem[];
   onNavigate: (page: PageKey) => void;
   onOpenArticle: (note: DisplayNote) => void;
@@ -1729,7 +1846,7 @@ function HomePage({
         <button type="button" onClick={() => onNavigate('share')}>{homeContent.recommendation.buttonLabel}</button>
       </section>
 
-      <MusicPlayer tracks={site.musicTracks} />
+      <MusicPlayer player={musicPlayer} />
 
       <section className="glass-card like-card">
         <button
@@ -2351,6 +2468,8 @@ function AvatarPage() {
 
 function PublicApp() {
   const content = useFrontendContent();
+  const audioRef = useRef<HTMLAudioElement>(null);
+  const musicPlayer = useMusicPlayer(content.site.musicTracks, audioRef);
   const socialItems = useMemo(() => createSocials(content.site.github), [content.site.github]);
   const likeClientId = useMemo(() => getLikeClientId(), []);
   const [page, setPage] = useState<PageKey>(() => pageFromHash());
@@ -2578,6 +2697,7 @@ function PublicApp() {
         projects={content.projects}
         resources={content.resources}
         site={content.site}
+        musicPlayer={musicPlayer}
         socialItems={socialItems}
         onNavigate={handleNavigate}
         onOpenArticle={handleOpenArticle}
@@ -2599,8 +2719,21 @@ function PublicApp() {
     avatar: <AvatarPage />,
   }[renderedPage];
 
+  const canvasClassName = renderedPage === 'home'
+    ? 'site-canvas home-canvas'
+    : 'site-canvas music-mini-visible';
+
   return (
-    <main className={renderedPage === 'home' ? 'site-canvas home-canvas' : 'site-canvas'} aria-label={uiLabels.siteCanvas}>
+    <main className={canvasClassName} aria-label={uiLabels.siteCanvas}>
+      <audio
+        ref={audioRef}
+        src={musicPlayer.hasAudioSource ? musicPlayer.currentTrack.src : undefined}
+        preload="metadata"
+        onLoadedMetadata={musicPlayer.handleLoadedMetadata}
+        onTimeUpdate={musicPlayer.handleTimeUpdate}
+        onEnded={musicPlayer.nextTrack}
+        onError={musicPlayer.handlePlaybackError}
+      />
       <div className="soft-glow glow-pink" />
       <div className="soft-glow glow-blue" />
       <div className="soft-glow glow-mini" />
@@ -2616,6 +2749,7 @@ function PublicApp() {
       <div className={`page-transition page-transition-${transitionPhase}`} key={renderedPage}>
         {pageContent}
       </div>
+      {renderedPage !== 'home' && <MiniMusicPlayer player={musicPlayer} />}
     </main>
   );
 }
